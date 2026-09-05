@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import hmac
 import json
@@ -49,14 +50,28 @@ SESSION_COOKIE = "panel_session"
 SESSION_TTL = 60 * 60 * 24 * 30
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+def _session_hash(session_id: str) -> str:
+    """What is stored for a session id. The id is 32 random bytes from
+    `secrets`, not a password, so a plain hash is the right tool: it only
+    has to stop a database read from yielding usable cookies."""
+    return hashlib.sha256(session_id.encode("utf-8", "replace")).hexdigest()
 
 
+@functools.lru_cache(maxsize=8)
 def _token_fingerprint(expected: str) -> str:
-    """Identifies which api_token a session was issued under, without being
-    usable as the token: a truncated hash."""
-    return _sha256("panel-token:" + expected)[:32]
+    """Identifies which api_token a session was issued under.
+
+    The token IS a credential, so its stored derivative is made with a
+    password-grade KDF (scrypt), not a fast hash: a database read must not be
+    a shortcut to the token. Deterministic (fixed salt) because it has to
+    match across restarts; memoised because it is checked on every cookie
+    request and only changes when the token does.
+    """
+    return hashlib.scrypt(
+        expected.encode("utf-8", "replace"),
+        salt=b"homelab-panel/session-token/v1",
+        n=2**14, r=8, p=1, dklen=32,
+    ).hex()
 
 state: dict[str, object] = {}
 
@@ -82,6 +97,10 @@ async def lifespan(app: FastAPI):
     engine = Engine(cfg, store)
     state.update(cfg=cfg, store=store, engine=engine)
     await engine.start()
+    # Pay the scrypt cost for the session fingerprint once, here, rather than
+    # on the first browser request after every restart.
+    if _expected_token():
+        await asyncio.to_thread(_token_fingerprint, _expected_token())
     log.info(
         "panel %s ready on %s:%s",
         __version__,
@@ -165,7 +184,7 @@ async def require_token(request: Request) -> None:
         # The cookie is a session id; only its hash is stored, and the session
         # must have been issued under the *current* token (rotation logs
         # everyone out). Nothing here compares against the token itself.
-        if store().session_valid(_sha256(token), _token_fingerprint(expected)):
+        if store().session_valid(_session_hash(token), _token_fingerprint(expected)):
             return
     # Constant-time: a plain != leaks the length of the matching prefix.
     # Compared as bytes: compare_digest raises TypeError on non-ASCII str, which
@@ -297,7 +316,7 @@ async def open_session(request: Request) -> JSONResponse:
     if not expected:
         return JSONResponse({"session": False, "reason": "no api_token configured"})
     session_id = secrets.token_urlsafe(32)
-    store().create_session(_sha256(session_id), _token_fingerprint(expected), SESSION_TTL)
+    store().create_session(_session_hash(session_id), _token_fingerprint(expected), SESSION_TTL)
     payload = JSONResponse({"session": True})
     payload.set_cookie(
         SESSION_COOKIE,

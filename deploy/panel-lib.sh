@@ -58,6 +58,57 @@ take_lock() {
 }
 
 # ---------------------------------------------------------------------
+# Git in the user's checkout
+# ---------------------------------------------------------------------
+#
+# Both scripts run as root against a clone the user owns, and git WRITES to
+# that clone even when only asked to read: `git status` refreshes .git/index.
+# Root doing that under `umask 077` leaves the index root-owned and mode 600,
+# after which neither the user nor the next `panelctl update` can open it
+# ("index file open failed: Permission denied") — an install that silently
+# broke its own updater. So git always runs as the clone's owner, with a
+# normal umask, through one wrapper both scripts share.
+
+SRC_OWNER="root"
+
+init_git_owner() {
+  # $1 = the checkout. Sets SRC_OWNER, repairs metadata an older installer
+  # left root-owned, and proves the owner can actually run git before
+  # committing to that path.
+  local dir="$1" gitdir
+  SRC_OWNER="$(stat -c %U "$dir" 2>/dev/null || echo root)"
+  if [[ "$SRC_OWNER" == "root" ]] || ! id -u "$SRC_OWNER" >/dev/null 2>&1; then
+    SRC_OWNER="root"
+    return 0
+  fi
+  gitdir="$(git -c "safe.directory=$dir" -C "$dir" rev-parse --git-dir 2>/dev/null)" || return 0
+  [[ "$gitdir" == /* ]] || gitdir="$dir/$gitdir"
+
+  # Repair: everything under .git belongs to whoever owns the checkout.
+  if [[ -n "$(find "$gitdir" -user root -print -quit 2>/dev/null || true)" ]]; then
+    warn "repairing root-owned git metadata in $gitdir (an earlier install left it unreadable to $SRC_OWNER)"
+    chown -R "$SRC_OWNER" "$gitdir" 2>/dev/null || true
+  fi
+
+  # -H so git reads the owner's ~/.gitconfig, not root's (which it cannot).
+  if ! ( umask 022; sudo -H -u "$SRC_OWNER" git -C "$dir" rev-parse --git-dir ) >/dev/null 2>&1; then
+    warn "cannot run git as $SRC_OWNER; falling back to root"
+    SRC_OWNER="root"
+  fi
+  return 0
+}
+
+g() {
+  # git in $SRC_DIR, as its owner, with a normal umask. safe.directory covers
+  # the root-owned case (a clone made with sudo).
+  if [[ "$SRC_OWNER" != "root" ]]; then
+    ( umask 022; sudo -H -u "$SRC_OWNER" git -C "$SRC_DIR" "$@" )
+  else
+    ( umask 022; git -c "safe.directory=$SRC_DIR" -C "$SRC_DIR" "$@" )
+  fi
+}
+
+# ---------------------------------------------------------------------
 # Stopping the service — and knowing that it stopped
 # ---------------------------------------------------------------------
 

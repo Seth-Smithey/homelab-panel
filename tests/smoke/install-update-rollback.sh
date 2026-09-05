@@ -15,10 +15,15 @@
 #   v99.0.0           a good newer stable release, committed without exec bits
 #   v100.0.0-test     a decoy pre-release the stable channel must skip
 #
+# The clone is owned by an unprivileged user, as a real one is: root running
+# git in it (even `git status`, which rewrites .git/index) must never leave
+# it unreadable to that user.
+#
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="${SMOKE_WORK:-/tmp/panel-smoke}"
+CLONE_OWNER="${SMOKE_CLONE_OWNER:-paneltest}"
 export PANEL_NO_SYSTEMD=1 PANELCTL_NO_SYSTEMD=1
 
 step() { echo; echo "##### $*"; }
@@ -79,8 +84,23 @@ git commit -qam decoy && git tag -a v100.0.0-test -m decoy
 git push -q origin --tags
 git checkout -q "v$CUR"
 
+step "Hand the clone to an unprivileged owner, as a real deployment has"
+id "$CLONE_OWNER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$CLONE_OWNER"
+# The origin too: a real deployment fetches from an https:// URL, but this
+# fixture's origin is a local path, and git refuses to read a repository
+# owned by someone else ("dubious ownership").
+chown -R "$CLONE_OWNER" "$WORK/clone" "$WORK/origin.git"
+git_metadata_is_owned_by_user() {
+  local stray
+  stray="$(find "$WORK/clone/.git" ! -user "$CLONE_OWNER" -print -quit 2>/dev/null || true)"
+  [[ -z "$stray" ]] || fail "$1: $stray is not owned by $CLONE_OWNER"
+  sudo -H -u "$CLONE_OWNER" git -C "$WORK/clone" status --porcelain >/dev/null 2>&1 \
+    || fail "$1: $CLONE_OWNER can no longer run git in their own clone"
+}
+
 step "Install $CUR"
 bash ./install.sh
+git_metadata_is_owned_by_user "after install"
 [[ "$(manifest_version)" == "$CUR" ]] || fail "manifest should say $CUR"
 [[ "$(db_schema)" == "$SCHEMA" ]] || fail "schema should be $SCHEMA"
 ( cd /tmp && panelctl check ) || fail "panelctl check"
@@ -93,6 +113,8 @@ bash ./install.sh 2>&1 | tee "$WORK/reinstall.txt"
 grep -q "files untouched\|Nothing to do" "$WORK/reinstall.txt" || fail "reinstall should reuse or skip"
 [[ "$(sha_tree "$CURRENT_REL")" == "$BEFORE" ]] || fail "current release was modified by a reinstall"
 [[ "$(readlink -f /opt/homelab-panel/current)" == "$CURRENT_REL" ]] || fail "current changed on reinstall"
+
+git_metadata_is_owned_by_user "after reinstall"
 
 step "Plan with --check (major bump must be reported, not fatal)"
 bash ./update.sh --check | tee "$WORK/check.txt"
@@ -138,6 +160,8 @@ step "Moving to an OLDER build must be refused without --allow-downgrade"
 if bash ./update.sh --to "v$CUR"; then fail "downgrade was accepted without --allow-downgrade"; fi
 [[ "$(manifest_version)" == "99.0.0" ]] || fail "a refused downgrade must change nothing"
 bash ./update.sh --check --to "v$CUR" | grep -q "allow-downgrade" || fail "--check should explain --allow-downgrade"
+
+git_metadata_is_owned_by_user "after update"
 
 step "A damaged backup must be refused before anything changes"
 LATEST="$(ls -1dt /var/backups/homelab-panel/*/ | head -1)"

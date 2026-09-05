@@ -65,11 +65,10 @@ take_lock
 SRC_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC_DIR/app/version.py" | head -1)"
 [[ -n "$SRC_VERSION" ]] || die "$SRC_DIR/app/version.py has no __version__ — is this the right directory?"
 
-# Root reading a clone owned by another user trips git's "dubious ownership"
-# check and silently reports "not a git repo"; safe.directory scopes the
-# exemption to exactly this path for exactly this invocation — never a
-# global wildcard.
-g() { git -c "safe.directory=$SRC_DIR" -C "$SRC_DIR" "$@"; }
+# `g` runs git as the checkout's owner (see deploy/panel-lib.sh): even
+# read-only commands write .git/index, and root writing it under this
+# script's umask 077 is what once left the clone unusable to its owner.
+init_git_owner "$SRC_DIR"
 if g rev-parse --git-dir >/dev/null 2>&1; then
   SRC_COMMIT="$(g rev-parse --short=12 HEAD 2>/dev/null || true)"
   SRC_DIRTY="$(g status --porcelain 2>/dev/null | head -1)"

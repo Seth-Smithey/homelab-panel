@@ -212,18 +212,9 @@ mkdir -p "$BACKUP_ROOT"; chmod 700 "$BACKUP_ROOT"
 # What is deployed, and what is available
 # ---------------------------------------------------------------------
 
-# Git runs as the clone's owner with a normal umask. Root running fetch and
-# checkout under umask 077 left the user's own files root-owned and mode 600,
-# so `git switch main` as themselves stopped working. safe.directory covers
-# the root-owned case (a clone made with sudo).
-SRC_OWNER="$(stat -c %U "$SRC_DIR" 2>/dev/null || echo root)"
-g() {
-  if [[ "$SRC_OWNER" != "root" ]] && id -u "$SRC_OWNER" >/dev/null 2>&1; then
-    ( umask 022; sudo -u "$SRC_OWNER" git -C "$SRC_DIR" "$@" )
-  else
-    ( umask 022; git -c "safe.directory=$SRC_DIR" -C "$SRC_DIR" "$@" )
-  fi
-}
+# git as the checkout's owner, repairing anything an older install left
+# root-owned (see deploy/panel-lib.sh).
+init_git_owner "$SRC_DIR"
 
 g rev-parse --git-dir >/dev/null 2>&1 \
   || die "$SRC_DIR is not a git checkout. Updating in place needs one:
@@ -246,7 +237,13 @@ VERSION_PATH="${REPO_PREFIX}app/version.py"
 command -v curl >/dev/null 2>&1 || die "curl is required for the health check (apt install curl)."
 
 say "Fetching"
-g fetch --tags --quiet origin || die "Could not reach the remote."
+if ! FETCH_ERR="$(g fetch --tags --quiet origin 2>&1)"; then
+  # Git's own message names the cause — a DNS failure, a credential prompt,
+  # a proxy, an ownership refusal. Swallowing it left only "could not reach
+  # the remote", which sends people looking at the network for an hour.
+  [[ -n "$FETCH_ERR" ]] && sed 's/^/      /' <<<"$FETCH_ERR" >&2
+  die "Could not reach the remote (git's error is above)."
+fi
 
 if [[ -f "$APP_DIR/manifest.json" ]]; then
   CURRENT_VERSION="$(jget "$APP_DIR/manifest.json" version)"

@@ -20,6 +20,10 @@ from .base import Collector
 
 def _fetch_der(host: str, port: int, timeout: float = 6.0) -> bytes:
     ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    # Verification is off ON PURPOSE: the point is to read the certificate
+    # and report on it — including one that is expired, self-signed or for
+    # the wrong name — not to trust the connection. Nothing is sent over it.
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     with (

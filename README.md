@@ -265,7 +265,11 @@ don't control — generate one with `sudo panelctl gen-token`.
 Clients pass it as `Authorization: Bearer <token>` or `?token=<token>`. The
 browser sends the query form exactly once, then trades it for an HttpOnly
 session cookie and drops it from the URL, so the token stops being written
-into the access log and browser history on every poll.
+into the access log and browser history on every poll. The cookie is a
+random session id — the browser never holds the token — and the server keeps
+only the id's hash, tied to the token it was issued under, so rotating
+`server.api_token` logs every browser out at once. Sessions last 30 days and
+survive restarts.
 
 **On a phone.** The panel ships a web manifest, so "Add to Home Screen" gives
 you a standalone app. It's built for a narrow viewport.

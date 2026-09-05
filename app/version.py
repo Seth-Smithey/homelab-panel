@@ -28,7 +28,7 @@ CONFIG_VERSION = 1
 # Bumped by adding a migration to app/migrations.py. Never edit an existing
 # migration once released — the whole point is that a database written by an
 # older version can be walked forward deterministically.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def version_tuple() -> tuple[int, ...]:

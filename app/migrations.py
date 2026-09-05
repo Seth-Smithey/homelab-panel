@@ -164,12 +164,37 @@ def _m004_ephemeral_and_observations(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m005_sessions(conn: sqlite3.Connection) -> None:
+    """Server-side browser sessions.
+
+    The session cookie used to carry the API token itself, so every browser
+    that had ever logged in held the credential in clear text for 30 days.
+    Now the cookie is a random id and only its SHA-256 is stored here, with
+    a fingerprint of the token it was issued under so rotating the token
+    invalidates every session at once. Persisted so a restart does not log
+    every wall display out.
+    """
+    _run(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            id_hash  TEXT PRIMARY KEY,
+            token_fp TEXT NOT NULL,
+            created  REAL NOT NULL,
+            expires  REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires);
+        """
+    )
+
+
 # Index i applies migration i+1. Append only.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_indexes_and_severity,
     _m003_observation_coverage,
     _m004_ephemeral_and_observations,
+    _m005_sessions,
 ]
 
 

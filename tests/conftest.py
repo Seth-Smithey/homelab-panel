@@ -39,8 +39,14 @@ host_metrics: {enabled: false}
 """
 
 
+def tmp_file(suffix: str) -> str:
+    """A path inside a fresh private directory — no predictable-name race
+    (tempfile.mktemp), and SQLite may create the file itself."""
+    return os.path.join(tempfile.mkdtemp(prefix="panel-test-"), f"t{suffix}")
+
+
 def write_config(text: str = BASE_CONFIG) -> Path:
-    path = Path(tempfile.mktemp(suffix=".yaml"))
+    path = Path(tmp_file(".yaml"))
     path.write_text(text)
     return path
 
@@ -57,7 +63,7 @@ def config(config_path: Path) -> Config:
 
 @pytest.fixture
 def store() -> Store:
-    st = Store(tempfile.mktemp(suffix=".db"))
+    st = Store(tmp_file(".db"))
     yield st
     st.close()
 

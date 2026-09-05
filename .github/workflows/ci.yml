@@ -9,6 +9,10 @@ on:
   # refuse to publish unless it passes.
   workflow_call:
 
+# Least privilege: nothing here needs to write to the repository.
+permissions:
+  contents: read
+
 jobs:
   python:
     name: Python ${{ matrix.python-version }}

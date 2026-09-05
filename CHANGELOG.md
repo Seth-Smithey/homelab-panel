@@ -13,6 +13,20 @@ passes and a regression suite, but has not yet run against live Proxmox,
 UniFi, Wazuh, Splunk, UPS, Pi-hole, Cloudflare or Backblaze services. `1.0.0`
 is the tag to cut after it has survived a week on real hardware.
 
+### Security — CodeQL findings on the first push
+
+- **Session cookie no longer carries the API token.** It is now a random
+  session id; the server stores only its SHA-256 plus a fingerprint of the
+  token it was issued under, in a persisted `sessions` table (schema v5), so
+  a restart keeps browsers logged in and rotating `server.api_token` logs
+  every browser out. A guessed cookie, or the token used as a cookie, is 401.
+- `certificates` pins TLS 1.2 as the floor for its inspection connection (the
+  deliberately unverified handshake is documented in place: it reads the
+  certificate, it trusts nothing and sends nothing).
+- CI workflow declares `permissions: contents: read` at the top level.
+- Tests no longer use `tempfile.mktemp` (predictable-name race); each test
+  file lives in its own `mkdtemp` directory.
+
 ### Fixed — pre-push scan against the live repository
 
 - `install.sh` validated the staged release by executing its `deploy/panelctl`

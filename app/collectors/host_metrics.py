@@ -66,7 +66,7 @@ class HostMetricsCollector(Collector):
                 usage = await asyncio.wait_for(
                     asyncio.to_thread(psutil.disk_usage, path), timeout=5
                 )
-            except (OSError, asyncio.TimeoutError):
+            except (TimeoutError, OSError):
                 panel.checks.append(
                     Check(
                         id=f"host.disk{path}",

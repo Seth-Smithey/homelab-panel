@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
   # Lets release.yml run this exact suite against the tagged commit and
@@ -16,11 +16,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        # 3.11+: websockets 17 (via uvicorn[standard]) dropped 3.10, and 3.10
+        # is end-of-life in October 2026. Ubuntu 24.04 ships 3.12.
+        python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -79,8 +81,8 @@ jobs:
     name: Dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: pip-audit against the lockfile
@@ -93,7 +95,7 @@ jobs:
     name: Shell
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -116,10 +118,9 @@ jobs:
     name: Web
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+      - uses: actions/checkout@v7
+      # ubuntu-latest ships a current Node; no setup-node (and no
+      # package.json for it to look for a lockfile against).
       - name: Syntax-check the client
         run: |
           node --check web/app.js
@@ -136,7 +137,7 @@ jobs:
           console.log(`all ${ids.length} element ids present`);
           JS
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -163,7 +164,7 @@ jobs:
     # damaged backup that must be refused, and rollback. The script is in the
     # repository so the same rehearsal can be run on a real VM.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Run the smoke test

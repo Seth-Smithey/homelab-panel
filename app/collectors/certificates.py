@@ -14,7 +14,7 @@ import ssl
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 
-from ..models import CRITICAL, OK, WARNING, Check, Panel
+from ..models import CRITICAL, OK, UNKNOWN, WARNING, Check, Panel
 from .base import Collector
 
 
@@ -55,12 +55,25 @@ class CertificateCollector(Collector):
 
         for entry in hosts:
             host, _, port_s = str(entry).partition(":")
-            port = int(port_s or 443)
+            try:
+                port = int(port_s or 443)
+            except ValueError:
+                panel.checks.append(
+                    Check(
+                        id=f"cert.{entry}",
+                        name=str(entry),
+                        severity=UNKNOWN,
+                        value="bad port",
+                        detail=f"'{port_s}' is not a port number — use hostname or hostname:port",
+                        group="Certificates",
+                    )
+                )
+                continue
             try:
                 der = await asyncio.to_thread(_fetch_der, host, port)
                 cert = x509.load_der_x509_certificate(der)
                 not_after = cert.not_valid_after_utc
-                days = (not_after - dt.datetime.now(dt.timezone.utc)).days
+                days = (not_after - dt.datetime.now(dt.UTC)).days
                 sev = CRITICAL if days <= crit_days else WARNING if days <= warn_days else OK
                 panel.checks.append(
                     Check(

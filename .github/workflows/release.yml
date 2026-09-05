@@ -29,11 +29,11 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -65,9 +65,11 @@ jobs:
           {
             echo "notes<<CHANGELOG_EOF"
             # Exact heading match: "## [1.0.0]" must not also match "## [1.0.0-rc.1]".
-            ESCAPED="$(printf '%s' "$VERSION" | sed 's/[.[\*^$]/\\&/g')"
-            awk -v v="$ESCAPED" '
-              $0 ~ ("^## \\[" v "\\]") { found = 1; next }
+            # A literal prefix test, not a regex: gawk and mawk disagree about
+            # escape processing in -v values, and one of them turned the
+            # escaped brackets back into a bracket expression that never matched.
+            awk -v v="$VERSION" '
+              index($0, "## [" v "]") == 1 { found = 1; next }
               found && /^## / { exit }
               found { print }
             ' CHANGELOG.md > /tmp/notes.md
@@ -82,7 +84,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           body: |
@@ -104,9 +106,9 @@ jobs:
             **Fresh install**
 
             ```bash
-            git clone https://github.com/${{ github.repository }}.git
+            git clone --branch ${{ github.ref_name }} https://github.com/${{ github.repository }}.git
             cd homelab-panel
-            sudo ./install.sh
+            sudo bash install.sh
             ```
 
             Commit: `${{ github.sha }}`

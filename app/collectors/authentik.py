@@ -6,7 +6,7 @@ then quietly don't. Worth watching directly rather than by HTTP probe.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -23,8 +23,8 @@ def _is_recent(stamp: object, within_seconds: float) -> bool:
         text = str(stamp).replace("Z", "+00:00")
         when = datetime.fromisoformat(text)
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - when).total_seconds() <= within_seconds
+            when = when.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - when).total_seconds() <= within_seconds
     except (TypeError, ValueError):
         return False
 

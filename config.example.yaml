@@ -182,6 +182,9 @@ wan:
     - "https://api.ipify.org"
     - "https://ifconfig.me/ip"
     - "https://icanhazip.com"
+  # Ask the echo services for IPv4 first; false reports whichever family
+  # answers first (usually IPv6 on a dual-stack host).
+  prefer_ipv4: true
   # Resolved against public DNS, not Pi-hole — we want the outside view.
   resolvers: ["1.1.1.1", "8.8.8.8"]
   ddns_hostnames:

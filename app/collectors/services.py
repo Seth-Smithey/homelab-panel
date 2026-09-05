@@ -7,7 +7,7 @@ import time
 
 import httpx
 
-from ..models import CRITICAL, OK, WARNING, Check, Panel
+from ..models import CRITICAL, OK, UNKNOWN, WARNING, Check, Panel
 from .base import Collector
 
 
@@ -18,7 +18,11 @@ class ServiceCollector(Collector):
     async def _http(self, check: dict) -> Check:
         name = check.get("name", check.get("url", "?"))
         url = check.get("url", "")
-        expect = set(check.get("expect_status", [200]))
+        # `expect_status: 401` (a scalar) is as valid as a list; the validator
+        # accepts both and so must the runtime, or a typo becomes a phantom
+        # "probe failed" while the real service goes unwatched.
+        raw_expect = check.get("expect_status", [200])
+        expect = {int(x) for x in (raw_expect if isinstance(raw_expect, list) else [raw_expect])}
         verify = bool(check.get("verify_ssl", True))
         timeout = float(self.opt("timeout", 8))
         started = time.perf_counter()
@@ -74,7 +78,7 @@ class ServiceCollector(Collector):
                 metric=round(ms, 1),
                 metric_unit="ms",
             )
-        except (OSError, asyncio.TimeoutError):
+        except (TimeoutError, OSError):
             return Check(
                 id=f"tcp.{name}",
                 name=name,
@@ -86,8 +90,11 @@ class ServiceCollector(Collector):
 
     async def collect(self) -> Panel:
         panel = Panel(key=self.key, title=self.title)
-        tasks = [self._http(c) for c in self.opt("checks", [])]
-        tasks += [self._tcp(c) for c in self.opt("tcp_checks", [])]
+        http_checks = [c for c in (self.opt("checks", []) or []) if isinstance(c, dict)]
+        tcp_checks = [c for c in (self.opt("tcp_checks", []) or []) if isinstance(c, dict)]
+        configured = http_checks + tcp_checks
+        tasks = [self._http(c) for c in http_checks]
+        tasks += [self._tcp(c) for c in tcp_checks]
         if not tasks:
             panel.error = "No service checks configured"
             return panel
@@ -97,13 +104,20 @@ class ServiceCollector(Collector):
             if isinstance(res, Check):
                 panel.checks.append(res)
             elif isinstance(res, BaseException):
+                # Keep the id tied to the configured check, not to a Python
+                # object address: ids that change every poll orphan mutes and
+                # history, and "unknown" is the honest state — the probe did
+                # not run, so nothing is known about the service.
+                entry = configured[len(panel.checks)] if len(panel.checks) < len(configured) else {}
+                name = str(entry.get("name") or entry.get("url") or entry.get("host") or "?")
                 panel.checks.append(
                     Check(
-                        id=f"svc.error.{id(res)}",
-                        name="Probe failed",
-                        severity=WARNING,
-                        value="error",
+                        id=f"svc.{name}",
+                        name=name,
+                        severity=UNKNOWN,
+                        value="probe failed",
                         detail=str(res)[:120],
+                        group=str(entry.get("group", "Services")),
                     )
                 )
 

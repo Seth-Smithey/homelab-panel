@@ -6,13 +6,13 @@
 # else is the real code path. CI runs this; so can you, in a throwaway VM or
 # container, as root:
 #
-#   sudo tests/smoke/install-update-rollback.sh
+#   sudo bash tests/smoke/install-update-rollback.sh
 #
 # It builds a fake git origin with four releases from the working tree:
 #
 #   v<current>        what is checked out
 #   v98.0.0           schema 4 + never becomes ready  (must fail AND revert)
-#   v99.0.0           a good newer stable release
+#   v99.0.0           a good newer stable release, committed without exec bits
 #   v100.0.0-test     a decoy pre-release the stable channel must skip
 #
 set -euo pipefail
@@ -67,17 +67,20 @@ open(p, "w").write(s2)
 PY
 git commit -qam "98.0.0: schema 4, never ready" && git tag -a v98.0.0 -m v98
 
-# v99: a good release on top of the current code (not on top of v98).
+# v99: a good release on top of the current code (not on top of v98) — with
+# every executable bit stripped, as a commit made from Windows arrives.
+# Updating to it must still work: nothing may depend on the mode bits.
 git checkout -q "v$CUR"
 sed -i "s/__version__ = \"$CUR\"/__version__ = \"99.0.0\"/" app/version.py
-git commit -qam "99.0.0" && git tag -a v99.0.0 -m v99
+git update-index --chmod=-x install.sh update.sh deploy/panelctl tests/smoke/install-update-rollback.sh
+git commit -qam "99.0.0 (no exec bits)" && git tag -a v99.0.0 -m v99
 sed -i 's/__version__ = "99.0.0"/__version__ = "100.0.0-test"/' app/version.py
 git commit -qam decoy && git tag -a v100.0.0-test -m decoy
 git push -q origin --tags
 git checkout -q "v$CUR"
 
 step "Install $CUR"
-./install.sh
+bash ./install.sh
 [[ "$(manifest_version)" == "$CUR" ]] || fail "manifest should say $CUR"
 [[ "$(db_schema)" == "$SCHEMA" ]] || fail "schema should be $SCHEMA"
 ( cd /tmp && panelctl check ) || fail "panelctl check"
@@ -86,19 +89,19 @@ CURRENT_REL="$(readlink -f /opt/homelab-panel/current)"
 BEFORE="$(sha_tree "$CURRENT_REL")"
 
 step "Reinstalling the same commit must not touch the current release"
-./install.sh 2>&1 | tee "$WORK/reinstall.txt"
+bash ./install.sh 2>&1 | tee "$WORK/reinstall.txt"
 grep -q "files untouched\|Nothing to do" "$WORK/reinstall.txt" || fail "reinstall should reuse or skip"
 [[ "$(sha_tree "$CURRENT_REL")" == "$BEFORE" ]] || fail "current release was modified by a reinstall"
 [[ "$(readlink -f /opt/homelab-panel/current)" == "$CURRENT_REL" ]] || fail "current changed on reinstall"
 
 step "Plan with --check (major bump must be reported, not fatal)"
-./update.sh --check | tee "$WORK/check.txt"
+bash ./update.sh --check | tee "$WORK/check.txt"
 grep -q "Available   99.0.0" "$WORK/check.txt" || fail "--check should offer 99.0.0"
 grep -q "allow-major" "$WORK/check.txt" || fail "--check should mention --allow-major"
 ! grep -q "100.0.0-test" "$WORK/check.txt" || fail "--check must skip the pre-release decoy"
 
 step "A real update must refuse an unapproved major bump"
-if ./update.sh; then fail "should have refused the major bump"; fi
+if bash ./update.sh; then fail "should have refused the major bump"; fi
 [[ "$(manifest_version)" == "$CUR" ]] || fail "refusal must change nothing"
 
 step "Seed the database with state the rollback must preserve"
@@ -112,7 +115,7 @@ MUTES_BEFORE="$(python3 -c 'import sqlite3;print(sqlite3.connect("/opt/homelab-p
 cp -p /opt/homelab-panel/panelctl "$WORK/panelctl.before"
 
 step "Schema-changing update to a release that never becomes ready: must fail and revert"
-if ./update.sh --to v98.0.0 --allow-major 2>&1 | tee "$WORK/bad.txt"; then fail "the v98 update should have failed"; fi
+if bash ./update.sh --to v98.0.0 --allow-major 2>&1 | tee "$WORK/bad.txt"; then fail "the v98 update should have failed"; fi
 grep -q "Restored database" "$WORK/bad.txt" || fail "revert should report restoring the database"
 grep -q "smoke_only\|migrating database schema" "$WORK/bad.txt" || true
 [[ "$(manifest_version)" == "$CUR" ]] || fail "manifest should still say $CUR after the failed update"
@@ -126,22 +129,27 @@ python3 -c 'import sqlite3;c=sqlite3.connect("/opt/homelab-panel/data/panel.db")
 ( cd /tmp && panelctl check ) || fail "old release rejects the restored config"
 
 step "Update to the newer stable release"
-./update.sh --allow-major
+bash ./update.sh --allow-major
 [[ "$(manifest_version)" == "99.0.0" ]] || fail "manifest should say 99.0.0"
-./update.sh --list-backups | tee "$WORK/backups.txt"
+bash ./update.sh --list-backups | tee "$WORK/backups.txt"
 grep -q "complete, verified" "$WORK/backups.txt" || fail "expected a verified backup"
+
+step "Moving to an OLDER build must be refused without --allow-downgrade"
+if bash ./update.sh --to "v$CUR"; then fail "downgrade was accepted without --allow-downgrade"; fi
+[[ "$(manifest_version)" == "99.0.0" ]] || fail "a refused downgrade must change nothing"
+bash ./update.sh --check --to "v$CUR" | grep -q "allow-downgrade" || fail "--check should explain --allow-downgrade"
 
 step "A damaged backup must be refused before anything changes"
 LATEST="$(ls -1dt /var/backups/homelab-panel/*/ | head -1)"
 cp -a "$LATEST" "$WORK/damaged"
 echo "tamper" >> "$WORK/damaged/config.yaml"
 mv "$WORK/damaged" "/var/backups/homelab-panel/damaged-smoke"
-if ./update.sh --rollback damaged-smoke; then fail "rollback accepted a damaged backup"; fi
+if bash ./update.sh --rollback damaged-smoke; then fail "rollback accepted a damaged backup"; fi
 [[ "$(manifest_version)" == "99.0.0" ]] || fail "a refused rollback must change nothing"
 rm -rf /var/backups/homelab-panel/damaged-smoke
 
 step "Roll back"
-./update.sh --rollback
+bash ./update.sh --rollback
 [[ "$(manifest_version)" == "$CUR" ]] || fail "rollback should restore $CUR"
 [[ "$(db_schema)" == "$SCHEMA" ]] || fail "rollback should restore schema $SCHEMA"
 

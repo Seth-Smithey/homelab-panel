@@ -37,7 +37,7 @@ async def _ping(host: str, timeout: float) -> float | None:
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 2)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         return None
@@ -62,7 +62,7 @@ async def _tcp_probe(host: str, port: int, timeout: float) -> float | None:
             pass
     except ConnectionRefusedError:
         pass  # something answered — the host is alive
-    except (OSError, asyncio.TimeoutError):
+    except (TimeoutError, OSError):
         return None
     return (asyncio.get_running_loop().time() - started) * 1000
 

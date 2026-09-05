@@ -9,7 +9,7 @@ that says whether anything is wrong right now — so the bar for a change is
 ```bash
 git clone https://github.com/Seth-Smithey/homelab-panel.git
 cd homelab-panel
-python -m venv .venv && . .venv/bin/activate
+python3.11 -m venv .venv && . .venv/bin/activate   # 3.11 or newer
 pip install -r requirements.lock -r requirements-dev.txt
 ```
 
@@ -25,7 +25,7 @@ PANEL_CONFIG=config.yaml PANEL_DB=/tmp/panel.db python -m app.main
 ```bash
 ruff check app/ tests/
 pytest -q
-shellcheck --severity=warning install.sh update.sh deploy/panelctl
+shellcheck --severity=warning install.sh update.sh deploy/panelctl deploy/panel-lib.sh tests/smoke/*.sh
 ```
 
 CI runs the same, plus `pip-audit` and a real install → update → rollback

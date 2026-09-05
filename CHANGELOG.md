@@ -13,6 +13,22 @@ passes and a regression suite, but has not yet run against live Proxmox,
 UniFi, Wazuh, Splunk, UPS, Pi-hole, Cloudflare or Backblaze services. `1.0.0`
 is the tag to cut after it has survived a week on real hardware.
 
+### Fixed — the installer broke its own updater
+
+- **`sudo bash install.sh` left the clone unusable to its owner.** The
+  installer ran `git status` in the user's checkout as root under `umask 077`
+  — and git rewrites `.git/index` even when only asked to read — so the index
+  became root-owned mode 600 and the next `sudo panelctl update` died with
+  `fatal: .git/index: index file open failed: Permission denied`. Found on the
+  first real deployment. The updater already ran git as the checkout's owner;
+  the installer did not, and it runs first. Both now share one wrapper
+  (`init_git_owner` / `g` in `deploy/panel-lib.sh`) that runs git as the owner
+  with a normal umask, repairs metadata an earlier install left root-owned,
+  and falls back to root only if it proves the owner cannot run git at all.
+  The smoke test now hands its clone to an unprivileged user and asserts
+  after every phase that nothing under `.git` has changed owner — the gap
+  that let this ship was a smoke test running entirely as root.
+
 ### Security — CodeQL findings on the first push
 
 - **Session cookie no longer carries the API token.** It is now a random

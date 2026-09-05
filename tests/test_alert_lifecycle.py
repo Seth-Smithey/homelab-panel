@@ -540,8 +540,10 @@ async def test_downgrade_below_floor_is_still_reported_after_a_delivered_critica
     eng._ingest(make_panel("p", "P", [check("disk", OK)]))
     await eng._drain_alerts_once()
     states = [t["new"] for b in delivered for t in b if t["id"] == "disk"]
-    assert states == [CRITICAL, WARNING], states
-    assert eng._state["disk"]["notified"] == OK  # the ok was settled silently, below the floor
+    # The downgrade was sent (the receiver had heard "critical"), so its
+    # recovery is sent too: the receiver's last word is never a stale state.
+    assert states == [CRITICAL, WARNING, OK], states
+    assert eng._state["disk"]["notified"] == OK
     # A warning that was never preceded by a delivered critical stays silent.
     delivered.clear()
     eng._ingest(make_panel("p", "P", [check("disk2", WARNING)]))

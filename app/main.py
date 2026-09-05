@@ -219,7 +219,7 @@ def _clamp(value, default: int, ceiling: int, floor: int = 1) -> int:
     return max(floor, min(number, ceiling))
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 async def healthz() -> JSONResponse:
     """Liveness plus a readiness hint update.sh can act on.
 
@@ -479,7 +479,7 @@ async def stream(request: Request) -> StreamingResponse:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=20)
                     yield f"data: {json.dumps(payload, allow_nan=False)}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # A named event, not an SSE comment: comments never reach
                     # EventSource listeners, so the client could not tell a
                     # healthy-but-quiet stream (every collector on a 60s+

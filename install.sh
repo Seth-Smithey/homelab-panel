@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# homelab panel — installer for Ubuntu 22.04 / 24.04
+# homelab panel — installer for Ubuntu 24.04 (or any host with Python 3.11+)
 #
 #   sudo bash install.sh
 #
@@ -97,13 +97,58 @@ NEED_APT=""
 for tool in python3 rsync curl ping; do
   command -v "$tool" >/dev/null 2>&1 || NEED_APT=1
 done
+
+# The interpreter that builds the venv. The dependency set needs Python 3.11+
+# (websockets 17 dropped 3.10), so a bare `python3` is only acceptable when it
+# is new enough; otherwise the newest versioned interpreter on the box wins.
+# A clear refusal here beats pip's "no matching distribution" a minute later.
+MIN_PY_MINOR=11
+new_enough() { "$1" -c "import sys; sys.exit(0 if sys.version_info >= (3, $MIN_PY_MINOR) else 1)" 2>/dev/null; }
+pick_python() {
+  # The distro's python3 when it qualifies (its venv package is plain
+  # python3-venv, and apt can install that); otherwise the newest versioned
+  # interpreter, e.g. python3.12 from deadsnakes on Ubuntu 22.04.
+  local c
+  for c in python3 python3.13 python3.12 python3.11; do
+    if command -v "$c" >/dev/null 2>&1 && new_enough "$c"; then command -v "$c"; return 0; fi
+  done
+  return 1
+}
+if ! PYTHON="$(pick_python)"; then
+  if command -v python3 >/dev/null 2>&1; then
+    HAVE="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)"
+    echo >&2
+    echo "  This panel needs Python 3.$MIN_PY_MINOR or newer; this host's python3 is $HAVE." >&2
+    echo "  Ubuntu 24.04 ships 3.12. On Ubuntu 22.04 (3.10) install a newer interpreter first:" >&2
+    echo "    sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python3.12 python3.12-venv" >&2
+    echo "  then re-run this script; it picks up the newest python3.x it finds." >&2
+    exit 1
+  fi
+  # No python at all: apt installs the distro's, checked again below.
+  NEED_APT=1
+  PYTHON=""
+fi
+
 # `import venv` succeeding does not mean a venv can be built: Ubuntu ships the
-# module in the stdlib but the pip bootstrap wheels in python3-venv. The only
-# honest test is to build one.
-if command -v python3 >/dev/null 2>&1; then
-  VENV_PROBE="$(mktemp -d)"
-  python3 -m venv "$VENV_PROBE/v" >/dev/null 2>&1 && [[ -x "$VENV_PROBE/v/bin/pip" ]] || NEED_APT=1
-  rm -rf "$VENV_PROBE"
+# module in the stdlib but the pip bootstrap wheels in python3-venv (or
+# python3.X-venv for a versioned interpreter). The only honest test is to
+# build one; when that fails and apt exists, the package is installed below.
+VENV_PKG="python3-venv"
+probe_venv() {
+  local probe ok=1
+  probe="$(mktemp -d)"
+  if "$PYTHON" -m venv "$probe/v" >/dev/null 2>&1 && [[ -x "$probe/v/bin/pip" ]]; then ok=0; fi
+  rm -rf "$probe"
+  return $ok
+}
+if [[ -n "$PYTHON" ]]; then
+  echo "  using $PYTHON ($("$PYTHON" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])'))"
+  VENV_PKG="$(basename "$PYTHON")-venv"
+  if ! probe_venv; then
+    command -v apt-get >/dev/null 2>&1 \
+      || die "$PYTHON cannot create a virtualenv. Install its venv package ($VENV_PKG) and re-run."
+    NEED_APT=1
+  fi
 fi
 
 # Read the configured port with the panel's own parser when a release exists
@@ -151,7 +196,7 @@ if command -v ss >/dev/null 2>&1; then
     echo "  Port ${PANEL_PORT} is in use by something other than ${SERVICE}:"
     sed 's/^/    /' <<<"$CONFLICTS"
     echo
-    echo "  Pick a free port:  sudo PANEL_PORT=8090 $0"
+    echo "  Pick a free port:  sudo PANEL_PORT=8090 bash $SRC_DIR/install.sh"
     exit 1
   fi
   if (( OUR_PID > 0 )); then
@@ -175,7 +220,12 @@ fi
 if [[ -n "$NEED_APT" ]]; then
   say "Installing system packages"
   apt-get update -qq
-  apt-get install -y -qq python3 python3-venv python3-pip rsync curl iputils-ping
+  apt-get install -y -qq python3 "$VENV_PKG" python3-pip rsync curl iputils-ping
+  if [[ -z "$PYTHON" ]]; then
+    PYTHON="$(pick_python)" || die "apt installed python3 but it is older than 3.$MIN_PY_MINOR. Install python3.12 + python3.12-venv (deadsnakes on 22.04) and re-run."
+    echo "  using $PYTHON"
+  fi
+  probe_venv || die "$PYTHON still cannot create a virtualenv after installing $VENV_PKG. Check: $PYTHON -m venv /tmp/probe"
 fi
 
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
@@ -252,12 +302,12 @@ if (( ! REUSE_CURRENT )); then
   mkdir -p "$RELEASE_DIR"
   rsync -a --delete \
     --exclude '.git' --exclude '.github' --exclude 'tests' --exclude '.*_cache' \
-    --exclude 'venv' --exclude '__pycache__' --exclude '*.pyc' \
+    --exclude 'venv' --exclude '__pycache__' --exclude '*.pyc' --exclude 'node_modules' \
     --exclude 'data' --exclude 'config.yaml' --exclude '.env' --exclude 'backups' \
     "$SRC_DIR"/ "$RELEASE_DIR"/
 
   say "Building its virtualenv"
-  python3 -m venv "$RELEASE_DIR/venv"
+  "$PYTHON" -m venv "$RELEASE_DIR/venv"
   "$RELEASE_DIR/venv/bin/pip" install --quiet --upgrade pip
   if [[ -f "$RELEASE_DIR/requirements.lock" ]]; then
     "$RELEASE_DIR/venv/bin/pip" install --quiet -r "$RELEASE_DIR/requirements.lock"
@@ -347,8 +397,10 @@ chmod 750 "$APP_DIR/data"
 # as the service user, with the service's environment. The deployed wrapper
 # at $APP_DIR/panelctl is not replaced until activation, so a rejected
 # release leaves no new control files behind.
+# Through bash: a checkout committed from Windows may have lost the file's
+# executable bit, and that must not fail an update.
 say "Validating configuration against $SRC_VERSION"
-if ! PANELCTL_RELEASE="$RELEASE_DIR" PANELCTL_NO_SYSTEMD="$NO_SYSTEMD" "$RELEASE_DIR/deploy/panelctl" check; then
+if ! PANELCTL_RELEASE="$RELEASE_DIR" PANELCTL_NO_SYSTEMD="$NO_SYSTEMD" bash "$RELEASE_DIR/deploy/panelctl" check; then
   echo
   if [[ -n "$PREVIOUS" ]]; then
     echo "  The new release does not accept the current configuration." >&2
@@ -359,7 +411,7 @@ if ! PANELCTL_RELEASE="$RELEASE_DIR" PANELCTL_NO_SYSTEMD="$NO_SYSTEMD" "$RELEASE
     echo "  Nothing is running and nothing was broken. Fix the items above:" >&2
     echo "    sudo nano $APP_DIR/.env          # credentials" >&2
     echo "    sudo nano $APP_DIR/config.yaml   # what to watch" >&2
-    echo "    sudo $0                          # then run this again" >&2
+    echo "    sudo bash $SRC_DIR/install.sh    # then run this again" >&2
   fi
   exit 1
 fi
@@ -438,6 +490,10 @@ revert() {
     stop_direct
   else
     echo "  There was no previous release to fall back to." >&2
+    # A first install that never became healthy must not leave a unit that
+    # crash-loops on the next boot.
+    sc disable "$SERVICE" >/dev/null 2>&1 || true
+    echo "  The service is stopped and disabled; nothing runs until this succeeds." >&2
   fi
 }
 

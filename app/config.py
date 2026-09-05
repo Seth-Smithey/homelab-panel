@@ -40,7 +40,9 @@ PUBLISHABLE_KEYS = {
     "transcode_warn", "warn_days", "crit_days", "warn_count", "crit_count",
     "max_age_hours", "notable_level", "window_minutes", "task_window_hours",
     "default_interval", "history_retention_days",
-    "min_active_agents", "check_disks", "prefer_ipv4",
+    "min_active_agents", "check_disks", "prefer_ipv4", "api_version", "cache_seconds",
+    "repo", "default_pattern", "default_min_bytes", "ups_name", "watch_tunnels",
+    "latency_warn_ms", "outpost_stale_seconds", "ip_sources", "bucket",
     # lists of things being watched (names, not credentials)
     "critical_guests", "watch_devices", "watch_indexes", "disk_paths",
     "targets", "checks", "tcp_checks", "hosts", "resolvers", "ddns_hostnames",

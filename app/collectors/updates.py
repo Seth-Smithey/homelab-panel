@@ -23,6 +23,7 @@ from ..version import __version__, parse_version
 from .base import Collector, CollectorError
 
 GITHUB_API = "https://api.github.com/repos/{repo}/releases/latest"
+GITHUB_RELEASES = "https://api.github.com/repos/{repo}/releases?per_page=10"
 
 
 class UpdateCollector(Collector):
@@ -47,19 +48,28 @@ class UpdateCollector(Collector):
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        r = await self.client(verify=True, timeout=10).get(
-            GITHUB_API.format(repo=repo), headers=headers
-        )
-        if r.status_code == 404:
-            raise CollectorError(
-                f"{repo} has no published releases yet (or the repo name is wrong)"
-            )
+        client = self.client(verify=True, timeout=10)
+        r = await client.get(GITHUB_API.format(repo=repo), headers=headers)
         if r.status_code == 403 and "rate limit" in r.text.lower():
             raise CollectorError(
                 "GitHub rate limit reached — set updates.github_token, or raise the interval"
             )
-        r.raise_for_status()
-        self._cached = r.json()
+        if r.status_code == 404:
+            # /releases/latest excludes pre-releases, so a repository whose
+            # only releases are release candidates answers 404 here. Ask for
+            # the list instead and take the newest published one; the caller
+            # is told when it is a pre-release.
+            r = await client.get(GITHUB_RELEASES.format(repo=repo), headers=headers)
+            if r.status_code == 404:
+                raise CollectorError(f"{repo} was not found on GitHub (check updates.repo)")
+            r.raise_for_status()
+            published = [x for x in (r.json() or []) if isinstance(x, dict) and not x.get("draft")]
+            if not published:
+                raise CollectorError(f"{repo} has no published releases yet")
+            self._cached = published[0]
+        else:
+            r.raise_for_status()
+            self._cached = r.json()
         self._cached_at = time.time()
         return self._cached
 
@@ -72,7 +82,7 @@ class UpdateCollector(Collector):
         except CollectorError as exc:
             panel.checks.append(
                 Check(
-                    id="panel.version",
+                    id="updates.version",
                     name="Panel version",
                     severity=UNKNOWN,
                     value=running,
@@ -108,10 +118,12 @@ class UpdateCollector(Collector):
             )
         else:
             severity, value, detail = OK, running, "running the newest release"
+        if release.get("prerelease"):
+            detail += " · newest published release is a pre-release"
 
         panel.checks.append(
             Check(
-                id="panel.version",
+                id="updates.version",
                 name="Panel version",
                 severity=severity,
                 value=value,

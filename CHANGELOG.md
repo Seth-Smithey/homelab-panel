@@ -13,6 +13,56 @@ passes and a regression suite, but has not yet run against live Proxmox,
 UniFi, Wazuh, Splunk, UPS, Pi-hole, Cloudflare or Backblaze services. `1.0.0`
 is the tag to cut after it has survived a week on real hardware.
 
+### Fixed — pre-push scan against the live repository
+
+- `install.sh` validated the staged release by executing its `deploy/panelctl`
+  directly; a commit made from Windows has no executable bit, so an update to
+  such a commit failed with "Permission denied". Everything now runs repo
+  scripts through `bash`, and the smoke test's "newer release" is committed
+  with every executable bit stripped to keep it that way.
+- `install.sh` preferred `python3.12` over `python3` on Ubuntu 24.04 and then
+  could not self-heal a missing `python3-venv` (the apt step only knew the
+  bare interpreter). It now prefers the distro `python3` when it is new
+  enough, installs the matching `python3.X-venv` package when a venv cannot
+  be built, and copes with a host that has no python at all.
+- `update.sh` ran git as root under `umask 077`, leaving the user's clone
+  root-owned and unreadable to them. Git now runs as the clone's owner with a
+  normal umask; mode-only differences no longer count as a dirty checkout.
+- `--channel pre` sorted `v1.0.0-rc.2` above `v1.0.0` and would have offered
+  a downgrade the day the stable release shipped (`versionsort.suffix=-`).
+  Moving to an older build now requires `--allow-downgrade` (rollback is the
+  right tool for that); `--check` says so. "No release tagged yet" exits 0.
+- A first install that never became healthy left the unit enabled to
+  crash-loop on the next boot; `revert()` now disables it.
+- `services`: a scalar `expect_status: 401` passed validation and then raised
+  inside the probe, replacing the check with a warning whose id changed every
+  poll. Scalars are accepted; a failed probe is `svc.<name>` / unknown.
+- `certificates`: `hostname:abc` errored the whole panel instead of one check.
+- Alerts: with `min_severity: critical`, a sent downgrade (critical → warning)
+  now also gets its recovery sent; the receiver's last word is never stale.
+- `updates` collector: with only pre-releases published, GitHub's
+  `/releases/latest` answers 404 — it now falls back to the release list and
+  labels a pre-release. Its check id moved from `panel.version` (the reserved
+  reachability namespace) to `updates.version`.
+- Release notes extraction used a regex through `awk -v`, which gawk and mawk
+  process differently; it is now a literal prefix match. The release's fresh
+  install snippet clones the tag being released.
+- Post-update "new config options" report only appears when the release
+  actually changed `config.example.yaml`.
+- `/healthz` answers HEAD; a few more non-secret keys are publishable in
+  `/api/config`; `wan.prefer_ipv4` documented; README corrections.
+
+### Changed — supported Python
+
+- **Python 3.11 or newer is required** (Ubuntu 24.04 ships 3.12). `websockets`
+  17, pulled in by `uvicorn[standard]`, dropped 3.10, and 3.10 reaches end of
+  life in October 2026 — holding the pin back would recur with every
+  dependency that follows. `install.sh` now refuses an older interpreter with
+  instructions instead of failing inside pip, and prefers the newest
+  `python3.x` on the host so a deadsnakes install on 22.04 works.
+- Dev tooling: `pytest` 9.0.2 → 9.0.3 (PYSEC-2026-1845, the Dependabot alert
+  on the repository; the runtime lockfile was never affected).
+
 ### Changed — correctness under failure (round 3)
 
 A third written review tested the failure paths rather than the happy path:

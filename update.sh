@@ -9,6 +9,7 @@
 #   sudo bash update.sh --check           say what would happen; change nothing
 #   sudo bash update.sh --list-backups    what can be rolled back to
 #   sudo bash update.sh --rollback [ID]   undo the last update, or a specific backup
+#   (--allow-major / --allow-downgrade to cross a major version or move to an older build)
 #
 # What it relies on, and why it can be trusted at 2am:
 #
@@ -32,6 +33,7 @@
 
 set -euo pipefail
 
+# shellcheck disable=SC2034  # consumed by deploy/panel-lib.sh (start_direct, restore_state)
 APP_USER="panel"
 APP_DIR="/opt/homelab-panel"
 BACKUP_ROOT="/var/backups/homelab-panel"
@@ -59,6 +61,7 @@ CHANNEL="stable"
 TARGET=""
 CHECK_ONLY=0
 ALLOW_MAJOR=0
+ALLOW_DOWNGRADE=0
 DO_ROLLBACK=0
 ROLLBACK_ID=""
 LIST_BACKUPS=0
@@ -69,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --to)          TARGET="${2:-}"; CHANNEL="pinned"; shift 2 ;;
     --check)       CHECK_ONLY=1; shift ;;
     --allow-major) ALLOW_MAJOR=1; shift ;;
+    --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
     --rollback)    DO_ROLLBACK=1; shift
                    if [[ $# -gt 0 && "$1" != --* ]]; then ROLLBACK_ID="$1"; shift; fi ;;
     --list-backups) LIST_BACKUPS=1; shift ;;
@@ -208,16 +212,29 @@ mkdir -p "$BACKUP_ROOT"; chmod 700 "$BACKUP_ROOT"
 # What is deployed, and what is available
 # ---------------------------------------------------------------------
 
-g() { git -c "safe.directory=$SRC_DIR" -C "$SRC_DIR" "$@"; }
+# Git runs as the clone's owner with a normal umask. Root running fetch and
+# checkout under umask 077 left the user's own files root-owned and mode 600,
+# so `git switch main` as themselves stopped working. safe.directory covers
+# the root-owned case (a clone made with sudo).
+SRC_OWNER="$(stat -c %U "$SRC_DIR" 2>/dev/null || echo root)"
+g() {
+  if [[ "$SRC_OWNER" != "root" ]] && id -u "$SRC_OWNER" >/dev/null 2>&1; then
+    ( umask 022; sudo -u "$SRC_OWNER" git -C "$SRC_DIR" "$@" )
+  else
+    ( umask 022; git -c "safe.directory=$SRC_DIR" -C "$SRC_DIR" "$@" )
+  fi
+}
 
 g rev-parse --git-dir >/dev/null 2>&1 \
   || die "$SRC_DIR is not a git checkout. Updating in place needs one:
     git clone https://github.com/Seth-Smithey/homelab-panel.git
   then run install.sh from the clone."
 
-if [[ -n "$(g status --porcelain 2>/dev/null)" ]]; then
+# Mode-only differences are ignored: a `chmod +x install.sh` on a clone whose
+# index says 644 is not a local change worth refusing over.
+if [[ -n "$(g -c core.fileMode=false status --porcelain 2>/dev/null)" ]]; then
   warn "You have local changes in $SRC_DIR:"
-  g status --short | sed 's/^/      /'
+  g -c core.fileMode=false status --short | sed 's/^/      /'
   die "Refusing to update from a dirty checkout. Commit, stash, or re-clone."
 fi
 
@@ -239,14 +256,25 @@ else
   CURRENT_COMMIT=""
 fi
 
-stable_tags() { g tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
-all_tags()    { g tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || true; }
+# versionsort.suffix=- makes v1.0.0-rc.2 sort BELOW v1.0.0 (git's default puts
+# a suffixed tag above the bare one, which would offer the rc as an "update"
+# to someone already on the release).
+stable_tags() { g -c versionsort.suffix=- tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
+all_tags()    { g -c versionsort.suffix=- tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || true; }
 
 case "$CHANNEL" in
   stable) TARGET="$(stable_tags | head -1)"
-          [[ -n "$TARGET" ]] || die "No stable release tags found. Use --channel pre, or --channel main." ;;
+          if [[ -z "$TARGET" ]]; then
+            say "No stable release (vX.Y.Z) has been tagged yet, so there is nothing to update to."
+            echo "    Pre-releases: sudo panelctl update --channel pre     Branch: --channel main"
+            exit 0
+          fi ;;
   pre)    TARGET="$(all_tags | head -1)"
-          [[ -n "$TARGET" ]] || die "No release tags found. Use --channel main to track the branch." ;;
+          if [[ -z "$TARGET" ]]; then
+            say "No release has been tagged yet, so there is nothing to update to."
+            echo "    To track the branch instead: sudo panelctl update --channel main"
+            exit 0
+          fi ;;
   main)   TARGET="origin/main" ;;
   pinned) [[ -n "$TARGET" ]] || die "--to needs a version."
           g rev-parse --verify --quiet "$TARGET^{commit}" >/dev/null || die "No such tag or ref: $TARGET" ;;
@@ -275,10 +303,24 @@ CUR_MAJOR="${CURRENT_VERSION%%.*}"; NEW_MAJOR="${NEW_VERSION%%.*}"
 if [[ "$CUR_MAJOR" =~ ^[0-9]+$ && "$NEW_MAJOR" =~ ^[0-9]+$ ]] && (( NEW_MAJOR > CUR_MAJOR )); then
   IS_MAJOR=1
 fi
+# A target that is an ancestor of what is deployed is an older build. That is
+# what --rollback is for (it restores the matching database too); doing it
+# through update runs a newer schema against older code and gets refused by
+# the migration guard at best.
+IS_DOWNGRADE=0
+if [[ -n "$CURRENT_COMMIT" ]] && g cat-file -e "$CURRENT_COMMIT^{commit}" 2>/dev/null \
+   && g merge-base --is-ancestor "$TARGET_COMMIT" "$CURRENT_COMMIT" 2>/dev/null; then
+  IS_DOWNGRADE=1
+fi
 
 say "Changes since ${CURRENT_COMMIT:-the deployed version}"
 if [[ -n "$CURRENT_COMMIT" ]] && g cat-file -e "$CURRENT_COMMIT^{commit}" 2>/dev/null; then
-  g log --oneline --no-decorate "$CURRENT_COMMIT..$TARGET_COMMIT" 2>/dev/null | head -25 | sed 's/^/      /'
+  LOG="$(g log --oneline --no-decorate "$CURRENT_COMMIT..$TARGET_COMMIT" 2>/dev/null | head -25)"
+  if [[ -n "$LOG" ]]; then
+    sed 's/^/      /' <<<"$LOG"
+  else
+    echo "      (none — $TARGET is not ahead of the deployed commit; this moves to a different or older build)"
+  fi
 else
   g log --oneline --no-decorate -10 "$TARGET_COMMIT" | sed 's/^/      /'
 fi
@@ -292,8 +334,20 @@ if (( CHECK_ONLY )); then
     echo "  Read the notes first:  https://github.com/Seth-Smithey/homelab-panel/releases/tag/$TARGET"
     echo
   fi
+  if (( IS_DOWNGRADE && ! ALLOW_DOWNGRADE )); then
+    echo "  $TARGET is OLDER than the deployed build: a real update needs --allow-downgrade"
+    echo "  (or use --rollback, which also restores the matching database)."
+    echo
+  fi
   say "--check: nothing was changed (fetched refs only)."
   exit 0
+fi
+
+if (( IS_DOWNGRADE && ! ALLOW_DOWNGRADE )); then
+  echo "  $TARGET is OLDER than the deployed build ($CURRENT_COMMIT)."
+  echo "  To go back to a previous release with its database:  sudo panelctl update --rollback"
+  echo "  To install this older build anyway:                   re-run with --allow-downgrade"
+  exit 3
 fi
 
 if (( IS_MAJOR && ! ALLOW_MAJOR )); then
@@ -338,7 +392,15 @@ fi
 
 prune_backups
 
-DIFF_OUT="$(ctl config-diff 2>/dev/null || true)"
+# Only worth showing when THIS release changed the example; otherwise a
+# starter-config install would be told about every optional collector after
+# every update.
+PREV_DIR="$(jget "$APP_DIR/manifest.json" previous_release_dir)"
+DIFF_OUT=""
+if [[ -z "$PREV_DIR" || ! -f "$PREV_DIR/config.example.yaml" ]] \
+   || ! cmp -s "$PREV_DIR/config.example.yaml" "$APP_DIR/current/config.example.yaml"; then
+  DIFF_OUT="$(ctl config-diff 2>/dev/null || true)"
+fi
 if grep -q '^  +' <<<"$DIFF_OUT"; then
   echo
   say "This release adds config options you do not have"

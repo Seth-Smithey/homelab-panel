@@ -3,7 +3,7 @@
 One board that answers a single question fast: is anything wrong right now?
 
 ![CI](https://github.com/Seth-Smithey/homelab-panel/actions/workflows/ci.yml/badge.svg)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Everything the panel knows reduces to a **check** — one answerable fact with a
@@ -40,7 +40,15 @@ Disabled collectors are skipped entirely. Nothing is required.
 
 ## Install
 
-Ubuntu 22.04 or 24.04, on any VM. It is light — 1 vCPU and 1 GB is plenty.
+Ubuntu 24.04, on any VM. It is light — 1 vCPU and 1 GB is plenty. The panel
+needs **Python 3.11 or newer** (24.04 ships 3.12). Ubuntu 22.04 ships 3.10,
+which the dependency set no longer supports; on 22.04 install a newer
+interpreter first and `install.sh` will pick it up:
+
+```bash
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt install python3.12 python3.12-venv
+```
 
 ```bash
 git clone https://github.com/Seth-Smithey/homelab-panel.git
@@ -96,7 +104,7 @@ the port — exempting only this service's own process, by PID — and shows you
 what else is listening if there is a conflict. To use a different port:
 
 ```bash
-sudo PANEL_PORT=8090 ./install.sh
+sudo PANEL_PORT=8090 bash install.sh
 ```
 
 That writes `server.port` into `config.yaml`, so the port it checked is the
@@ -152,13 +160,14 @@ don't have, it lists them at the end and leaves the decision to you.
 
 | Command | What it does |
 |---|---|
-| `sudo panelctl update` | Update to the newest **stable** release |
+| `sudo panelctl update` | Update to the newest **stable** release (until `v1.0.0` is tagged there is none — use `--channel pre`) |
 | `sudo panelctl update --channel pre` | Include pre-releases (`v1.2.0-rc.1`) |
 | `sudo panelctl update --channel main` | Track `main` instead of releases |
 | `sudo panelctl update --to v1.2.0` | Update to a specific version |
 | `sudo panelctl update --check` | Say what would happen, including whether `--allow-major` would be needed; change nothing |
 | `sudo panelctl update --list-backups` | Show what can be rolled back to, and whether each backup verifies |
 | `sudo panelctl update --rollback [id]` | Undo the last update, or restore a specific backup |
+| `... --allow-major` / `--allow-downgrade` | Cross a major version, or move to an older build (rollback is usually what you want) |
 | `sudo panelctl status` | What is deployed, is the service up, does it answer |
 
 After an update your clone sits at the release tag (detached HEAD). That is
@@ -309,9 +318,11 @@ spam, no alerts during the startup grace period, and never for a muted check.
 The payload carries both `content` and `text` keys, so Discord and Slack-style
 receivers both work without an adapter.
 
-Delivery is retried — three times, at 30s, 2m and 10m — and a failure is
-never treated as delivered: the check stays "unnotified" until a webhook
-accepts it, so the next successful attempt still carries it. The footer shows
+Delivery is retried with backoff (30s, 2m, then every 10m, indefinitely) and a
+failure is never treated as delivered: the check stays "unnotified" until a
+webhook accepts it, and what is eventually sent is the *current* state — a
+webhook outage spanning several changes delivers the net result, never a
+stale "critical" after a recovery. The footer shows
 how many alerts are waiting or could not be delivered. The startup grace
 period *delays* notification rather than cancelling it: whatever is still
 wrong when grace ends gets one alert then.
@@ -394,7 +405,7 @@ explicitly instead of quietly showing old numbers as current.
 | Symptom | Cause |
 |---|---|
 | Panel is grey with "Cannot reach X" | Host down, or the credential is wrong. Check the journal for the collector name. |
-| Panel shows "Last reading is Nm" | Collector is timing out. Its interval passed three times without a result. |
+| Panel shows "Last reading Nm ago — the poll interval is Ns" | Collector is timing out. Its interval passed three times without a result. |
 | Board only updates on refresh | SSE is buffered. Add `flush_interval -1` to the reverse proxy. |
 | Service returns 401 but is fine | Expected behind Authentik or Access. Add `401` to that check's `expect_status`. |
 | Everything critical on boot | Startup grace hasn't elapsed and collectors are staggered. Give it one interval. |
@@ -423,8 +434,7 @@ pytest -q
 
 `tests/` holds a regression suite built from three review passes: every
 scenario that was once a defect — a lost alert, a false green, a crash on a
-bad config value — is a test. CI runs it on Python 3.10–3.12, audits the
+bad config value — is a test. CI runs it on Python 3.11 and 3.12, audits the
 lockfile with `pip-audit`, shellchecks the scripts, and runs the real
 `install.sh` → `update.sh` → `--rollback` round trip in a container. A release
 tag is refused unless all of that passes on the tagged commit.
-x

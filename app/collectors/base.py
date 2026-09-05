@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import Any
@@ -102,7 +101,7 @@ class Collector:
         except CollectorError as exc:
             log.warning("%s: %s", self.key, exc)
             panel = Panel(key=self.key, title=self.title, error=str(exc)[:200])
-        except (ConnectionError, asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, ConnectionError, OSError) as exc:
             # Expected when a box is down. Worth a log line, not a traceback.
             target = self.opt("host", "the target")
             port = self.opt("port")

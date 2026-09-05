@@ -636,7 +636,7 @@ class Engine:
             while self._running:
                 try:
                     await client.get(url)
-                except httpx.HTTPError as exc:
+                except (httpx.HTTPError, httpx.InvalidURL) as exc:
                     log.warning("heartbeat failed: %s", exc)
                 await asyncio.sleep(interval)
 
@@ -680,6 +680,9 @@ class Engine:
                     "new": observed,
                     "value": meta.get("value", ""),
                     "detail": meta.get("detail", ""),
+                    # Was `old` actually sent (vs settled silently)? Decides
+                    # whether the receiver must hear that it changed.
+                    "delivered": bool(entry.get("delivered")),
                 }
             )
         return owed
@@ -705,8 +708,10 @@ class Engine:
         silent: list[dict[str, str]] = []
         for t in transitions:
             new, old = t["new"], t["old"]
-            delivered_above_floor = old in BAD and rank(old) >= floor
-            if rank(new) >= floor or delivered_above_floor:
+            # The receiver heard `old` if it cleared the floor or if it was a
+            # downgrade we chose to send; either way they must hear the change.
+            receiver_knows_old = old in BAD and (rank(old) >= floor or t.get("delivered"))
+            if rank(new) >= floor or receiver_knows_old:
                 # Either the new state clears the floor, or the receiver was
                 # told about a state above the floor and must hear that it
                 # changed — a downgrade (critical → warning under a critical
@@ -716,7 +721,7 @@ class Engine:
                 silent.append(t)
         return send, silent
 
-    def _mark_notified(self, transitions: list[dict[str, str]]) -> None:
+    def _mark_notified(self, transitions: list[dict[str, str]], delivered: bool = False) -> None:
         rows: list[tuple] = []
         forget: list[str] = []
         for t in transitions:
@@ -724,6 +729,7 @@ class Engine:
             if entry is None:
                 continue
             entry["notified"] = t["new"]
+            entry["delivered"] = delivered
             if entry.get("gone") and entry["severity"] == entry["notified"]:
                 # The tombstone has paid its debt.
                 forget.append(t["id"])
@@ -787,7 +793,7 @@ class Engine:
 
         ok, error = await self._deliver(send)
         if ok:
-            self._mark_notified(send)
+            self._mark_notified(send, delivered=True)
             self._alert_attempt = 0
             self._alert_next = 0.0
             self._alert_health["delivered"] += 1
@@ -822,12 +828,12 @@ class Engine:
             "site": self.cfg.get("site.name", "homelab"),
             "text": "\n".join(lines),
             "content": "\n".join(lines),
-            "transitions": transitions,
+            "transitions": [{k: v for k, v in t.items() if k != "delivered"} for t in transitions],
         }
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.post(webhook, json=body)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             return False, f"{type(exc).__name__}"
         if 200 <= response.status_code < 300:
             return True, ""

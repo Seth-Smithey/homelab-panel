@@ -1,0 +1,75 @@
+# =====================================================================
+# homelab panel — starter configuration
+#
+# This is what a fresh install begins with, and it is deliberately almost
+# empty: only the panel's own host metrics, which need no credentials and
+# cannot fail. The service starts, the board comes up green, and you have a
+# working thing to add to.
+#
+# Then open config.example.yaml — the full reference, every collector with
+# every option documented — and copy across the blocks you want, a couple at
+# a time, running the validator between each:
+#
+#     sudo panelctl check
+#     sudo panelctl restart
+#
+# Adding collectors two at a time and validating is much faster than enabling
+# fifteen at once and reading a wall of errors.
+# =====================================================================
+
+config_version: 1
+
+site:
+  name: "homelab"
+  subtitle: ""
+  timezone: "UTC"
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  # Empty means no authentication. Fine on a trusted LAN or behind
+  # Cloudflare Access. Generate one with:
+  #     sudo panelctl gen-token
+  api_token: ""
+
+poll:
+  default_interval: 30
+  history_retention_days: 14
+
+# The panel's own vitals. No credentials, always works — which is exactly
+# why it is the one collector enabled out of the box.
+host_metrics:
+  enabled: true
+  interval: 15
+  cpu_warn_pct: 85
+  mem_warn_pct: 88
+  disk_warn_pct: 85
+  disk_crit_pct: 93
+  disk_paths: ["/"]
+
+# Tells you when a new release of the panel is out. Off by default: it is
+# the only collector that talks to the internet about you rather than about
+# your lab, so it should be a choice you make.
+updates:
+  enabled: false
+  interval: 21600      # six hours
+  repo: "Seth-Smithey/homelab-panel"
+  # Optional. Raises the GitHub rate limit from 60/hour to 5000/hour; only
+  # worth setting if several things on this IP poll the API.
+  github_token: ""
+
+# Alerts are off until you point them somewhere. Discord and Slack-style
+# receivers both work without an adapter.
+alerts:
+  enabled: false
+  webhook_url: ""
+  min_severity: "warning"
+  startup_grace: 120
+
+# Who watches the watcher. The panel cannot report its own death; set this
+# to a Healthchecks.io check, an Uptime Kuma push monitor, or an ntfy topic
+# and that service tells you when the pings stop.
+heartbeat:
+  enabled: false
+  url: ""
+  interval: 300

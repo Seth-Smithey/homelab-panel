@@ -1,0 +1,38 @@
+# Not a distributable package — install.sh deploys it from a checkout — so
+# there is no [project] table. Tooling config only.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Pinned explicitly so CI and a local run can never disagree about what
+# "ruff check" means — the default rule set changes between ruff releases,
+# and a lint that passes for you and fails in CI is worse than no lint.
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes: undefined names, unused imports and variables
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "B",    # bugbear: mutable defaults, shadowed loop vars, silent except
+    "UP",   # pyupgrade
+    "C4",   # comprehension clarity
+    "SIM",  # obvious simplifications
+]
+ignore = [
+    "E501",   # line length: the formatter owns wrapping, not the linter
+    "B008",   # function call in a default — this is how FastAPI Depends works
+    "SIM105", # contextlib.suppress is not always clearer than try/except/pass
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Collectors deliberately catch broad exceptions: a third-party API that
+# returns something unexpected must degrade to one grey panel, never take
+# down the poll loop.
+"app/collectors/*.py" = ["BLE001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::RuntimeWarning"]

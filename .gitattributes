@@ -1,0 +1,5 @@
+# Shell scripts, Python and the unit file must be LF on every platform: a
+# CRLF install.sh fails on the first line with "bash\r: not found".
+* text=auto eol=lf
+*.png binary
+*.ico binary

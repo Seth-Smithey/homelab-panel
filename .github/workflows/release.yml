@@ -1,0 +1,115 @@
+name: Release
+
+# Tagging is the whole release process:
+#
+#   1. bump __version__ in app/version.py
+#   2. add a "## [X.Y.Z] — date" section at the top of CHANGELOG.md
+#   3. git tag -a v1.2.0 -m "v1.2.0" && git push origin v1.2.0
+#
+# A tag with a suffix (v1.2.0-rc.1) publishes as a pre-release; update.sh's
+# default channel skips those, --channel pre includes them.
+#
+# The release is gated on the full CI suite running against the tagged commit
+# — the same tests, the same lockfile, the same lint — and the tag must agree
+# with app/version.py. A release that lies about its version breaks update.sh
+# and the in-app check for everyone.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The tag must match app/version.py exactly
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CODE="$(python -c 'import re;print(re.search(r"__version__ = \"(.*)\"", open("app/version.py").read()).group(1))')"
+          if [ "$TAG" != "$CODE" ]; then
+            echo "Tag v$TAG does not match app/version.py ($CODE)." >&2
+            echo "Bump app/version.py and re-tag." >&2
+            exit 1
+          fi
+          echo "$TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || { echo "Tag is not SemVer: $TAG" >&2; exit 1; }
+          echo "tag and code agree on $CODE"
+
+      - name: Schema version must match the migration count
+        run: |
+          python -c "
+          from app.version import SCHEMA_VERSION
+          from app.migrations import MIGRATIONS
+          assert SCHEMA_VERSION == len(MIGRATIONS), (SCHEMA_VERSION, len(MIGRATIONS))
+          print(f'schema v{SCHEMA_VERSION}')
+          "
+
+      - name: Extract the changelog section for this version
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          {
+            echo "notes<<CHANGELOG_EOF"
+            # Exact heading match: "## [1.0.0]" must not also match "## [1.0.0-rc.1]".
+            ESCAPED="$(printf '%s' "$VERSION" | sed 's/[.[\*^$]/\\&/g')"
+            awk -v v="$ESCAPED" '
+              $0 ~ ("^## \\[" v "\\]") { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md > /tmp/notes.md
+            # A release without notes is a release nobody can judge before
+            # updating to it. Refuse an empty or missing section.
+            if ! grep -q '[^[:space:]]' /tmp/notes.md; then
+              echo "CHANGELOG.md has no non-empty '## [$VERSION]' section." >&2
+              exit 1
+            fi
+            cat /tmp/notes.md
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: |
+            ${{ steps.notes.outputs.notes }}
+
+            ---
+
+            **Updating an existing install**
+
+            ```bash
+            sudo panelctl update
+            ```
+
+            Builds and validates the new release in its own directory, takes
+            a verified backup, switches, verifies health, and puts everything
+            back (database included) if that fails. `sudo panelctl update
+            --rollback` undoes it afterwards.
+
+            **Fresh install**
+
+            ```bash
+            git clone https://github.com/${{ github.repository }}.git
+            cd homelab-panel
+            sudo ./install.sh
+            ```
+
+            Commit: `${{ github.sha }}`
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

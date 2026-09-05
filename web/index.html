@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0E161F">
+<title>homelab panel</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230E161F'/><rect x='7' y='7' width='7' height='7' fill='%234FB286'/><rect x='18' y='7' width='7' height='7' fill='%234FB286'/><rect x='7' y='18' width='7' height='7' fill='%234FB286'/><rect x='18' y='18' width='7' height='7' fill='%23E3A344'/></svg>">
+</head>
+<body>
+
+<!-- Announces connectivity and action results to screen readers without
+     narrating every poll. Visually hidden. -->
+<div id="live" class="sr-only" role="status" aria-live="polite"></div>
+
+<header class="bar">
+  <div class="bar-id">
+    <span class="bar-name" id="site-name">homelab</span>
+    <span class="bar-sub" id="site-sub"></span>
+  </div>
+  <div class="bar-tools">
+    <input id="filter" type="search" placeholder="Filter checks" autocomplete="off" spellcheck="false" aria-label="Filter checks">
+    <button id="problems" class="toggle" type="button" aria-pressed="false" title="Show only what needs attention (p)">Problems only</button>
+    <button id="order" class="toggle" type="button" aria-pressed="false" title="Keep panels in a fixed order instead of worst-first (o)">Fixed order</button>
+    <button id="notify" class="toggle" type="button" aria-pressed="false" title="Notify me when something breaks">Notify</button>
+    <button id="theme" class="toggle" type="button" title="Switch between dark and light (t)">Light</button>
+    <span class="feed" id="feed" data-state="connecting" role="status">connecting</span>
+  </div>
+</header>
+
+<!-- Freshness banner. Hidden unless the data on screen can no longer be
+     trusted: the stream dropped, or the server itself says readings are old. -->
+<div id="banner" class="banner" hidden role="alert"></div>
+
+<main>
+  <section class="verdict" id="verdict" data-severity="unknown">
+    <p class="verdict-line" id="headline">Connecting to the panel…</p>
+    <p class="verdict-meta" id="tally">Waiting for the first poll.</p>
+    <div class="strip" id="strip" aria-label="Every monitored check, one cell each"></div>
+    <p class="legend" id="legend" aria-hidden="true">
+      <span data-severity="ok">ok</span>
+      <span data-severity="warning">warning</span>
+      <span data-severity="critical">critical</span>
+      <span data-severity="unknown">unknown</span>
+      <span data-severity="stale">stale</span>
+      <span data-severity="muted">muted</span>
+    </p>
+  </section>
+
+  <section class="board" id="board"></section>
+
+  <section class="log">
+    <h2 class="log-title">Recent changes</h2>
+    <ol class="log-list" id="events">
+      <li class="log-empty">Nothing has changed state since the panel started.</li>
+    </ol>
+  </section>
+</main>
+
+<footer class="foot">
+  <span id="foot-status">—</span>
+  <span id="foot-alerts" class="foot-alerts" hidden></span>
+</footer>
+
+<!-- Transient messages: action results, errors, session expiry. -->
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

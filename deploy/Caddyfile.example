@@ -1,0 +1,31 @@
+# Reverse proxy for the panel, Caddy terminates TLS with a
+# Cloudflare DNS-01 cert, and a tunnel or port-forward points here.
+#
+# Build Caddy with the Cloudflare DNS module first:
+#   xcaddy build --with github.com/caddy-dns/cloudflare
+
+panel.example.com {
+	tls {
+		dns cloudflare {env.CF_DNS_API_TOKEN}
+	}
+
+	# Don't compress the event stream: it adds a buffering layer in front of
+	# the SSE flush and buys nothing on a stream this small.
+	@notsse not path /api/stream
+	encode @notsse zstd gzip
+
+	# SSE needs buffering off, or the board only updates when the buffer fills.
+	reverse_proxy 127.0.0.1:8080 {
+		flush_interval -1
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		# The page loads no third-party assets at all, so a strict policy
+		# costs nothing and means a future XSS cannot phone anywhere.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	}
+}

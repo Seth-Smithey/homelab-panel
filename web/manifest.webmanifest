@@ -1,0 +1,19 @@
+{
+  "name": "homelab panel",
+  "short_name": "panel",
+  "description": "Live status for the lab: compute, network, backups, power, and services.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0E161F",
+  "theme_color": "#0E161F",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

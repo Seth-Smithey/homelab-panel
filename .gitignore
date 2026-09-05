@@ -1,0 +1,39 @@
+# Secrets and live configuration — never commit these.
+# config.example.yaml and deploy/env.example are the templates; the real
+# files are derived from them on the host and stay there.
+.env
+.env.*
+config.yaml
+*.pem
+*.key
+*.crt
+secrets/
+
+# Runtime state
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+node_modules

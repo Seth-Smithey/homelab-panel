@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+#
+# panelctl — operate the installed panel from anywhere.
+#
+#   sudo panelctl check            validate config.yaml + .env against the installed release
+#   sudo panelctl config-diff      what the installed example has that your config lacks
+#   sudo panelctl gen-token        print a fresh api_token
+#   sudo panelctl restart | stop | start
+#   sudo panelctl status           what is deployed, and is it healthy
+#   sudo panelctl logs             follow the journal
+#   sudo panelctl update [args]    run update.sh from the recorded source checkout
+#   sudo panelctl wait-healthy [seconds] [expected-version]
+#
+# Every command runs the *installed* release from its own directory, as the
+# service user, with the service's environment. `python -m app.main` from a
+# random shell resolves `app` against the current directory — so run from a
+# source clone it imported the clone, run from /tmp it imported nothing, and
+# neither saw .env. This wrapper removes that whole class of mistake.
+
+set -euo pipefail
+
+APP_DIR="${PANELCTL_APP_DIR:-/opt/homelab-panel}"
+APP_USER="${PANELCTL_USER:-panel}"
+SERVICE="${PANELCTL_SERVICE:-homelab-panel}"
+# The installer points this at a release that is staged but not yet current,
+# so validation runs against the code about to be activated.
+RELEASE="${PANELCTL_RELEASE:-$APP_DIR/current}"
+
+die() { echo "  $*" >&2; exit 1; }
+jget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get(sys.argv[2]); print("" if v is None else v)' "$1" "$2" 2>/dev/null || true; }
+case "${PANELCTL_NO_SYSTEMD:-0}" in 1|true|yes|on) NO_SYSTEMD=1 ;; *) NO_SYSTEMD=0 ;; esac
+
+[[ -d "$RELEASE" ]] || die "No installed release at $RELEASE. Run install.sh first."
+PY="$RELEASE/venv/bin/python"
+[[ -x "$PY" ]] || die "The release at $RELEASE has no virtualenv. Re-run install.sh."
+
+run_as_panel() {
+  # Runs inside the release directory so `app` resolves to the installed
+  # code, with the same environment the unit provides.
+  if [[ $EUID -eq 0 ]]; then
+    ( cd "$RELEASE" && exec sudo -u "$APP_USER" env \
+        PANEL_CONFIG="$APP_DIR/config.yaml" \
+        PANEL_DB="$APP_DIR/data/panel.db" \
+        PANEL_LOG_LEVEL="${PANEL_LOG_LEVEL:-warning}" \
+        "$PY" "$@" )
+  else
+    ( cd "$RELEASE" && exec env \
+        PANEL_CONFIG="$APP_DIR/config.yaml" \
+        PANEL_DB="$APP_DIR/data/panel.db" \
+        PANEL_LOG_LEVEL="${PANEL_LOG_LEVEL:-warning}" \
+        "$PY" "$@" )
+  fi
+}
+
+# The address the panel actually listens on, from its own config parser.
+listen_address() {
+  run_as_panel -c '
+import os, sys
+sys.path.insert(0, ".")
+from app.config import Config
+cfg = Config.load(os.environ["PANEL_CONFIG"])
+host = str(cfg.get("server.host", "127.0.0.1") or "127.0.0.1")
+port = int(cfg.get("server.port", 8080) or 8080)
+if host == "::":
+    host = "::1"          # IPv6 wildcard: loopback is [::1], not 127.0.0.1
+elif host in ("0.0.0.0", ""):
+    host = "127.0.0.1"
+if ":" in host and not host.startswith("["):
+    host = f"[{host}]"
+print(f"http://{host}:{port}")
+' 2>/dev/null || echo "http://127.0.0.1:8080"
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  check)        run_as_panel -m app.main --check ;;
+  config-diff)  run_as_panel -m app.main --config-diff ;;
+  gen-token)    run_as_panel -m app.main --gen-token ;;
+  version)      run_as_panel -m app.main --version ;;
+  restart|stop|start)
+    [[ $EUID -eq 0 ]] || die "systemctl needs root: sudo panelctl $cmd"
+    systemctl "$cmd" "$SERVICE" ;;
+  logs)
+    journalctl -u "$SERVICE" -f ;;
+  status)
+    m="$APP_DIR/manifest.json"
+    if [[ -f "$m" ]]; then
+      printf 'Deployed   v%s  (release %s%s)\n' "$(jget "$m" version)" "$(jget "$m" release_id)" \
+        "$( c="$(jget "$m" commit)"; [[ -n "$c" ]] && echo ", commit $c" )"
+      printf 'Installed  %s\n' "$(jget "$m" installed_at)"
+      printf 'Source     %s\n' "$(jget "$m" source_dir)"
+      printf 'Schema     v%s   config v%s\n' "$(jget "$m" schema_version)" "$(jget "$m" config_version)"
+      prev="$(jget "$m" previous_release_dir)"; [[ -n "$prev" ]] && printf 'Previous   %s\n' "$prev"
+    else
+      echo "Deployed   (no manifest — installed before manifests existed)"
+    fi
+    if (( ! NO_SYSTEMD )); then
+      state="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+      since="$(systemctl show -p ActiveEnterTimestamp --value "$SERVICE" 2>/dev/null || true)"
+      printf 'Service    %s%s\n' "${state:-not installed}" "${since:+  since $since}"
+    fi
+    url="$(listen_address)"
+    body="$(curl -sf --max-time 3 "$url/healthz" 2>/dev/null || true)"
+    if [[ -n "$body" ]]; then
+      python3 - "$body" "$url" <<'PY2'
+import json, sys
+d = json.loads(sys.argv[1])
+ready = "ready" if d.get("ready") else "started, no poll completed yet"
+print(f"Health     answering as v{d.get('version','?')} at {sys.argv[2]} — {ready}, {d.get('collectors',0)} collectors")
+PY2
+    else
+      echo "Health     no answer from $url/healthz"
+    fi ;;
+  update)
+    [[ $EUID -eq 0 ]] || die "update needs root: sudo panelctl update"
+    src="$(jget "$APP_DIR/manifest.json" source_dir)"
+    [[ -n "$src" && -f "$src/update.sh" ]] \
+      || die "The manifest does not record a source checkout with update.sh (or it moved). Run update.sh from your clone directly."
+    # Through bash, so a clone that lost its executable bits still updates.
+    exec bash "$src/update.sh" "$@" ;;
+  wait-healthy)
+    # wait-healthy [timeout-seconds] [expected-version]
+    # Healthy means: the unit is active, /healthz answers, "ready" is true
+    # (at least one poll completed), and — if given — the version matches.
+    # A remote integration being down does NOT fail this; that must never
+    # cause a rollback of working software.
+    timeout="${1:-45}"; expected="${2:-}"
+    url="$(listen_address)"
+    deadline=$(( SECONDS + timeout ))
+    while (( SECONDS < deadline )); do
+      if (( NO_SYSTEMD )) || systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+        body="$(curl -sf --max-time 3 "$url/healthz" 2>/dev/null || true)"
+        if [[ -n "$body" ]]; then
+          ok="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("ok") and d.get("ready") else "no")' <<<"$body" 2>/dev/null || echo no)"
+          got="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' <<<"$body" 2>/dev/null || true)"
+          if [[ "$ok" == "yes" && ( -z "$expected" || "$got" == "$expected" ) ]]; then
+            echo "  healthy: $got at $url"
+            exit 0
+          fi
+          if [[ -n "$expected" && -n "$got" && "$got" != "$expected" ]]; then
+            echo "  answering, but as $got rather than $expected (not switched yet?)"
+          fi
+        fi
+      fi
+      sleep 2
+    done
+    echo "  not healthy after ${timeout}s at $url" >&2
+    exit 1 ;;
+  help|-h|--help)
+    sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  *)
+    die "Unknown command: $cmd (try: panelctl help)" ;;
+esac

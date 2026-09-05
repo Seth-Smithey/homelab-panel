@@ -1,0 +1,410 @@
+# =====================================================================
+# homelab panel — configuration
+# Copy to config.yaml and fill in. Secrets can be inlined OR pulled from
+# the environment with ${ENV_VAR} syntax (preferred — see deploy/env.example).
+# Anything you leave disabled is simply skipped; the panel degrades cleanly.
+# =====================================================================
+
+# Bumped when a release adds a config key you may want to act on. The
+# validator compares it against the running build and tells you when the
+# example has moved on; `sudo panelctl config-diff` lists what changed.
+config_version: 1
+
+site:
+  name: "homelab"
+  # Shown in the header. Keep it short.
+  subtitle: "10.10.30.0/24"
+  timezone: "America/Chicago"
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  # Bearer token required on every /api call when set. Leave empty for
+  # LAN-only; Cloudflare Access handles auth for the external hostname.
+  api_token: ""
+
+poll:
+  # Global default seconds between collector runs. Per-collector overrides
+  # live under each block below.
+  default_interval: 30
+  history_retention_days: 14
+
+# ---------------------------------------------------------------------
+# Proxmox — node health, VM/LXC state, storage, per-guest CPU/RAM
+# Create a token: Datacenter > Permissions > API Tokens (PVEAuditor is enough)
+# ---------------------------------------------------------------------
+proxmox:
+  enabled: true
+  interval: 20
+  host: "https://10.10.0.4:8006"
+  token_id: "dashboard@pve!panel"
+  token_secret: "${PVE_TOKEN_SECRET}"
+  verify_ssl: false
+  # Guests that must always be running. Anything here that is stopped
+  # escalates to critical instead of a warning.
+  critical_guests: ["DC01", "wazuh", "splunk"]
+  # Storage above this percent used raises a warning.
+  storage_warn_pct: 80
+  storage_crit_pct: 92
+  # SMART health per physical disk. Needs Sys.Audit on the token; the panel
+  # skips it silently if the permission isn't there.
+  check_disks: true
+  # SSD life consumed before warning (Proxmox reports remaining, we invert it).
+  ssd_wearout_warn_pct: 80
+  # Surface failed tasks (backups, migrations, snapshots) from this window.
+  task_window_hours: 24
+
+# ---------------------------------------------------------------------
+# Splunk Enterprise — management port, not the web UI
+# A read-only role with rest_properties_get is enough.
+# ---------------------------------------------------------------------
+splunk:
+  enabled: true
+  interval: 120
+  host: "https://10.10.30.12:8089"
+  username: "panel"
+  password: "${SPLUNK_PASSWORD}"
+  verify_ssl: false
+  license_warn_pct: 80
+  license_crit_pct: 95
+  index_warn_pct: 85
+  index_crit_pct: 95
+  # Empty means every enabled index. Narrow it if the list gets noisy.
+  watch_indexes: []
+
+# ---------------------------------------------------------------------
+# Authentik — the IdP everything else authenticates against
+# Token: Directory > Tokens & App passwords, intent "API"
+# ---------------------------------------------------------------------
+authentik:
+  enabled: true
+  # An outpost counts as connected only if it checked in this recently.
+  outpost_stale_seconds: 300
+  interval: 120
+  host: "https://auth.example.com"
+  api_token: "${AUTHENTIK_TOKEN}"
+  verify_ssl: true
+
+# ---------------------------------------------------------------------
+# Jellyfin — active streams and transcode load
+# API key: Dashboard > Advanced > API Keys
+# ---------------------------------------------------------------------
+jellyfin:
+  enabled: true
+  interval: 60
+  host: "https://jellyfin.example.com"
+  api_key: "${JELLYFIN_API_KEY}"
+  verify_ssl: true
+  # Warn above this many simultaneous transcodes.
+  transcode_warn: 2
+
+# ---------------------------------------------------------------------
+# UniFi — UDM-Pro. Two auth modes:
+#   api_key  -> UniFi OS 4.x+ local API key (Settings > Admins > API Keys)
+#   login    -> username/password against a local-only admin account
+# ---------------------------------------------------------------------
+unifi:
+  enabled: true
+  interval: 30
+  host: "https://10.10.0.1"
+  site: "default"
+  auth_mode: "api_key"          # api_key | login
+  api_key: "${UNIFI_API_KEY}"
+  username: ""
+  password: ""
+  verify_ssl: false
+  # WAN latency above this (ms) warns.
+  wan_latency_warn_ms: 60
+  # Alert if a named device drops offline.
+  watch_devices: []             # e.g. ["Office AP", "Rack Switch"]
+
+# ---------------------------------------------------------------------
+# Wazuh — agent enrollment health + manager status
+# ---------------------------------------------------------------------
+wazuh:
+  enabled: true
+  interval: 60
+  host: "https://10.10.30.13:55000"
+  username: "wazuh"
+  password: "${WAZUH_PASSWORD}"
+  verify_ssl: false
+  # Warn when fewer than this many agents are active.
+  min_active_agents: 5
+  # Alerts live in the Indexer, not the manager API. Optional — leave
+  # disabled and the panel just reports agent health.
+  indexer:
+    enabled: true
+    host: "https://10.10.30.13:9200"
+    username: "panel-readonly"   # a read-only indexer role, not admin
+    password: "${WAZUH_INDEXER_PASSWORD}"
+    verify_ssl: false
+    window_minutes: 60
+    # Rule level counted as notable. 10+ is where Wazuh gets interesting.
+    notable_level: 10
+    warn_count: 1
+    crit_count: 10
+
+# ---------------------------------------------------------------------
+# Fleet — ICMP across everything you manage
+# A TCP probe says a service is listening; a ping says the box is alive.
+# Mark critical: true for anything whose loss is an outage.
+# ---------------------------------------------------------------------
+fleet:
+  enabled: true
+  interval: 60
+  timeout: 3
+  latency_warn_ms: 50
+  # auto = ICMP where ping exists, TCP connect otherwise (containers, hardened
+  # hosts). Force it with 'icmp' or 'tcp'. TCP mode uses tcp_port per host.
+  method: "auto"
+  tcp_port: 22
+  hosts:
+    - {name: "pve1", host: "10.10.0.4", critical: true, group: "Infrastructure"}
+    - {name: "UDM-Pro", host: "10.10.0.1", critical: true, group: "Infrastructure"}
+    - {name: "DC01", host: "10.10.30.5", critical: true, group: "Infrastructure"}
+    - {name: "Pi-hole", host: "10.10.30.2", critical: true, group: "Infrastructure"}
+    - {name: "Wazuh", host: "10.10.30.13", group: "Servers"}
+    - {name: "Splunk", host: "10.10.30.12", group: "Servers"}
+    - {name: "Jellyfin", host: "10.10.30.14", group: "Servers"}
+    - {name: "Tunnel", host: "10.10.30.8", critical: true, group: "Servers"}
+    - {name: "Guacamole", host: "10.10.30.9", group: "Servers"}
+    - {name: "Kasm", host: "10.10.30.6", group: "Servers"}
+
+# ---------------------------------------------------------------------
+# WAN — your real public IP, and whether DDNS still points at it
+# Dynamic DNS fails silently: the updater dies, the lease renews, and
+# every external name keeps resolving to an address that isn't yours.
+# ---------------------------------------------------------------------
+wan:
+  enabled: true
+  interval: 300
+  ip_sources:
+    - "https://api.ipify.org"
+    - "https://ifconfig.me/ip"
+    - "https://icanhazip.com"
+  # Resolved against public DNS, not Pi-hole — we want the outside view.
+  resolvers: ["1.1.1.1", "8.8.8.8"]
+  ddns_hostnames:
+    - "example.com"
+
+# ---------------------------------------------------------------------
+# Heartbeat — who watches the watcher
+# The panel cannot report its own death. This pushes outward on a timer;
+# if the pings stop, an external service tells you. Point it at a
+# Healthchecks.io check, an Uptime Kuma push monitor, or ntfy.
+# It fires even when panels are critical: it means "the panel is alive",
+# not "the lab is healthy".
+# ---------------------------------------------------------------------
+heartbeat:
+  enabled: false
+  url: ""                      # or "${HEARTBEAT_URL}" from .env
+  interval: 300
+
+# ---------------------------------------------------------------------
+# Pi-hole — query volume, block rate, and "is DNS actually alive"
+# v6 uses the app password; v5 uses the API token from Settings > API.
+# ---------------------------------------------------------------------
+pihole:
+  enabled: true
+  interval: 60
+  host: "http://10.10.30.2"
+  api_version: 6                # 6 | 5
+  password: "${PIHOLE_PASSWORD}"  # v6 app password
+  api_token: ""                   # v5 only
+
+# ---------------------------------------------------------------------
+# Backups — Backblaze B2 freshness for the vzdump + rclone job
+# Application key needs listFiles on the bucket only.
+# ---------------------------------------------------------------------
+backups:
+  enabled: true
+  interval: 900
+  bucket: "homelab-backups"
+  key_id: "${B2_KEY_ID}"
+  app_key: "${B2_APP_KEY}"
+  # One entry per protected guest. max_age_hours is how stale a backup can
+  # get before the panel complains.
+  # What counts as a restore point. "Newest object under the prefix" is not
+  # the same thing: a log file or a zero-byte marker written after the archive
+  # would make a stale backup look fresh. Patterns match the basename, '|'
+  # separates alternatives; min_bytes discards markers and manifests.
+  default_pattern: "*.vma*|*.tar*|*.zst|*.gz|*.lzo"
+  default_min_bytes: 1048576
+  targets:
+    - name: "DC01"
+      prefix: "pve1/dc01/"
+      max_age_hours: 30
+      severity: "critical"
+    - name: "Wazuh"
+      prefix: "pve1/wazuh/"
+      max_age_hours: 30
+      severity: "warning"
+    - name: "Splunk"
+      prefix: "pve1/splunk/"
+      max_age_hours: 30
+      severity: "warning"
+
+# ---------------------------------------------------------------------
+# Cloudflare — tunnel health for the "homelab" tunnel on 10.10.30.8
+# Token scope: Account > Cloudflare Tunnel > Read
+# ---------------------------------------------------------------------
+cloudflare:
+  enabled: true
+  interval: 120
+  account_id: "${CF_ACCOUNT_ID}"
+  api_token: "${CF_API_TOKEN}"
+  # Optional: only watch these tunnel names. Empty = all.
+  watch_tunnels: ["homelab"]
+
+# ---------------------------------------------------------------------
+# UPS — NUT (upsd) on the Raspberry Pi
+# ---------------------------------------------------------------------
+ups:
+  enabled: true
+  interval: 20
+  host: "10.10.30.20"
+  port: 3493
+  ups_name: "ups"
+  username: ""
+  password: ""
+  battery_warn_pct: 60
+  runtime_warn_min: 10
+
+# ---------------------------------------------------------------------
+# Service probes — plain HTTP/TCP reachability for everything else
+# expect_status: list of acceptable codes. 401/403 is fine for anything
+# behind Authentik or Access — it proves the origin answered.
+# ---------------------------------------------------------------------
+services:
+  enabled: true
+  interval: 30
+  timeout: 8
+  checks:
+    - name: "Jellyfin"
+      url: "https://jellyfin.example.com"
+      expect_status: [200, 302, 401]
+      group: "Media"
+    - name: "Authentik"
+      url: "https://auth.example.com"
+      expect_status: [200, 302]
+      group: "Identity"
+    - name: "Splunk"
+      url: "https://10.10.30.12:8000"
+      expect_status: [200, 303]
+      verify_ssl: false
+      group: "Security"
+    - name: "Wazuh dashboard"
+      url: "https://10.10.30.13"
+      expect_status: [200, 302]
+      verify_ssl: false
+      group: "Security"
+    - name: "Guacamole"
+      url: "http://10.10.30.9:8080/guacamole/"
+      expect_status: [200, 302]
+      group: "Access"
+    - name: "Kasm"
+      url: "https://10.10.30.6"
+      expect_status: [200, 302]
+      verify_ssl: false
+      group: "Access"
+    - name: "Caddy (Jellyfin origin)"
+      url: "https://10.10.30.14"
+      expect_status: [200, 302, 421]
+      verify_ssl: false
+      group: "Media"
+  tcp_checks:
+    - name: "DC01 LDAP"
+      host: "10.10.30.5"
+      port: 389
+      group: "Identity"
+    - name: "DC01 Kerberos"
+      host: "10.10.30.5"
+      port: 88
+      group: "Identity"
+    - name: "Proxmox UI"
+      host: "10.10.0.4"
+      port: 8006
+      group: "Compute"
+
+# ---------------------------------------------------------------------
+# DNS — proves split-horizon resolution still works the way you want it
+# expect: the answer you require. "any" accepts any successful answer.
+# ---------------------------------------------------------------------
+dns:
+  enabled: true
+  interval: 120
+  checks:
+    - name: "Internal jellyfin -> LAN"
+      resolver: "10.10.30.5"
+      query: "jellyfin.example.com"
+      expect: "10.10.30.14"
+    - name: "Pi-hole recursion"
+      resolver: "10.10.30.2"
+      query: "cloudflare.com"
+      expect: "any"
+    - name: "AD zone authority"
+      resolver: "10.10.30.5"
+      query: "dc01.example.com"
+      expect: "10.10.30.5"
+
+# ---------------------------------------------------------------------
+# TLS — certificate expiry for anything you publish
+# ---------------------------------------------------------------------
+certificates:
+  enabled: true
+  interval: 3600
+  warn_days: 21
+  crit_days: 7
+  hosts:
+    - "jellyfin.example.com:443"
+    - "auth.example.com:443"
+
+# ---------------------------------------------------------------------
+# Host — the panel VM's own CPU / memory / disk / load
+# ---------------------------------------------------------------------
+host_metrics:
+  enabled: true
+  interval: 15
+  disk_paths: ["/"]
+  cpu_warn_pct: 85
+  mem_warn_pct: 88
+  disk_warn_pct: 85
+  disk_crit_pct: 93
+
+# ---------------------------------------------------------------------
+# Notifications — fired once on transition into warning/critical and once
+# on recovery. No repeat spam.
+# ---------------------------------------------------------------------
+alerts:
+  enabled: false
+  min_severity: "warning"       # warning | critical
+  # Generic JSON webhook (Discord, Slack, ntfy, Teams all accept this shape
+  # with their own adapters; see README).
+  webhook_url: ""
+  # Suppress alerts for this many seconds after startup so a cold boot
+  # doesn't page you for everything at once.
+  startup_grace: 120
+
+# ---------------------------------------------------------------------
+# Panel updates — is this dashboard itself out of date?
+#
+# The one thing a status board cannot notice on its own is its own age.
+# This asks GitHub for the newest release tag and compares it to the
+# running build.
+#
+# Off by default on purpose: it is the only collector that talks to the
+# internet about you rather than about your lab.
+#
+# It never goes worse than a warning — being a version behind is not an
+# outage, and a board that turns red because a patch shipped is a board you
+# stop reading.
+# ---------------------------------------------------------------------
+updates:
+  enabled: false
+  interval: 21600          # six hours; releases don't happen on a 30s cadence
+  repo: "Seth-Smithey/homelab-panel"
+  cache_seconds: 3600
+  # Optional. Raises GitHub's unauthenticated limit of 60 requests/hour to
+  # 5000. Only worth setting if several things on this IP poll the API.
+  # A public-repo read needs no scopes at all.
+  github_token: ""             # or "${GITHUB_TOKEN}" from .env

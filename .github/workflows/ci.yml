@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Lets release.yml run this exact suite against the tagged commit and
+  # refuse to publish unless it passes.
+  workflow_call:
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (from the lockfile, exactly as install.sh does)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check app/ tests/
+
+      - name: Import every module
+        run: |
+          python -c "
+          import importlib, pkgutil
+          import app.collectors as c
+          for m in pkgutil.iter_modules(c.__path__):
+              importlib.import_module(f'app.collectors.{m.name}')
+          import app.main, app.scheduler, app.db, app.config, app.validate, app.models
+          import app.migrations, app.version
+          print('all modules import cleanly')
+          "
+
+      - name: Tests
+        # Every scenario the review passes reproduced as a defect lives here
+        # as a regression test: alert lifecycle, grace, disappearance,
+        # persistence, non-finite values, staleness, migrations, auth,
+        # redaction, validator robustness.
+        run: pytest -q
+
+      - name: Lockfile is in sync with requirements.txt
+        # A drifted lock means install.sh ships something other than what the
+        # developer tested. Regenerate it whenever requirements.txt changes.
+        run: |
+          python - <<'PY'
+          import re
+          direct = {}
+          for line in open("requirements.txt"):
+              line = line.split("#")[0].strip()
+              if not line: continue
+              name, _, ver = line.partition("==")
+              direct[re.sub(r"\[.*\]", "", name).lower().replace("_", "-")] = ver
+          locked = {}
+          for line in open("requirements.lock"):
+              line = line.split("#")[0].strip()
+              if "==" in line:
+                  name, _, ver = line.partition("==")
+                  locked[name.lower().replace("_", "-")] = ver
+          bad = {n: (v, locked.get(n)) for n, v in direct.items() if locked.get(n) != v}
+          assert not bad, f"requirements.lock disagrees with requirements.txt: {bad}"
+          print(f"lockfile covers all {len(direct)} direct pins")
+          PY
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit against the lockfile
+        # Fails the build on a known vulnerability in anything we ship.
+        run: |
+          pip install -r requirements-dev.txt
+          pip-audit -r requirements.lock --strict
+
+  shell:
+    name: Shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning install.sh update.sh deploy/panelctl deploy/panel-lib.sh tests/smoke/*.sh
+          bash -n install.sh update.sh deploy/panelctl deploy/panel-lib.sh tests/smoke/*.sh
+      - name: Executable bits and line endings in the committed tree
+        # panelctl execs update.sh; install.sh is run directly. A checkout
+        # from Windows can lose both the mode and the LF endings.
+        run: |
+          for f in install.sh update.sh deploy/panelctl tests/smoke/install-update-rollback.sh; do
+            mode="$(git ls-files -s "$f" | cut -c1-6)"
+            [ "$mode" = "100755" ] || { echo "$f is not executable in git (mode $mode): git update-index --chmod=+x $f" >&2; exit 1; }
+          done
+          if grep -rlI $'\r' --include='*.sh' --include='*.py' --include='*.js' --include='*.yml' --include='*.yaml' --include=panelctl . ; then
+            echo "CRLF line endings found; commit with LF (.gitattributes enforces this)." >&2; exit 1
+          fi
+          echo "modes and line endings OK"
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Syntax-check the client
+        run: |
+          node --check web/app.js
+          node --check web/sw.js
+          node -e "JSON.parse(require('fs').readFileSync('web/manifest.webmanifest','utf8'))"
+          # Every element id app.js looks up must exist in index.html.
+          node - <<'JS'
+          const fs = require("fs");
+          const js = fs.readFileSync("web/app.js", "utf8");
+          const html = fs.readFileSync("web/index.html", "utf8");
+          const ids = [...js.matchAll(/getElementById\("([^"]+)"\)/g)].map(m => m[1]);
+          const missing = ids.filter(id => !html.includes(`id="${id}"`));
+          if (missing.length) { console.error("index.html lacks ids used by app.js:", missing); process.exit(1); }
+          console.log(`all ${ids.length} element ids present`);
+          JS
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Browser smoke test (real server, headless Chromium)
+        # What a syntax check cannot catch: the board renders without console
+        # errors, the stream goes live, disclosure semantics, focus across
+        # re-renders, chart refresh after a newer poll, and the connection
+        # watchdog staying quiet on a healthy-but-slow stream.
+        run: |
+          pip install -r requirements.lock
+          npm install --no-save playwright@1.56.0
+          npx playwright install --with-deps chromium
+          node tests/smoke/browser-smoke.mjs
+
+  install-smoke:
+    name: Real install → failed update (reverted) → update → rollback (no systemd)
+    runs-on: ubuntu-latest
+    # Runs install.sh and update.sh themselves — not a re-implementation —
+    # with PANEL_NO_SYSTEMD=1, which turns unit management into a no-op and
+    # starts the release directly for the health check. Everything else is
+    # the real code path: release staging, venv build, starter config,
+    # validation, verified backup, atomic switch, health verify, manifest,
+    # the schema-changing failed update that must restore the database, the
+    # damaged backup that must be refused, and rollback. The script is in the
+    # repository so the same rehearsal can be run on a real VM.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run the smoke test
+        run: sudo -E bash tests/smoke/install-update-rollback.sh

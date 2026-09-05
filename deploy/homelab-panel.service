@@ -1,0 +1,63 @@
+[Unit]
+Description=homelab panel
+Documentation=file:/opt/homelab-panel/current/README.md
+After=network-online.target
+Wants=network-online.target
+# A config error makes app.main exit non-zero on purpose. Without a burst
+# limit systemd retries that forever at 5s intervals, filling the journal.
+# (These belong in [Unit], not [Service] — systemd ignores them here silently
+# in older versions and warns in newer ones.)
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=panel
+Group=panel
+WorkingDirectory=/opt/homelab-panel/current
+EnvironmentFile=-/opt/homelab-panel/.env
+Environment=PANEL_CONFIG=/opt/homelab-panel/config.yaml
+Environment=PANEL_DB=/opt/homelab-panel/data/panel.db
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/homelab-panel/current/venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+
+# Hardening. The panel only needs outbound network and its own data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/homelab-panel/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# AF_NETLINK is needed by glibc's getaddrinfo and by iputils ping; both
+# degrade quietly without it, which is worse than allowing it.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelLogs=true
+PrivateDevices=true
+# The panel monitors your lab; it has no business reading the command lines
+# of every other service on the box, which is where their secrets live.
+# ProtectProc=invisible does that. ProcSubset=pid is deliberately NOT set: it
+# also hides /proc/stat, /proc/meminfo and /proc/uptime, which are exactly
+# what the host-metrics collector reads — the one collector a fresh install
+# depends on to prove it works.
+ProtectProc=invisible
+# Files it creates (the SQLite database and its WAL) stay owner-only.
+UMask=0077
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Without this, the seccomp filter above can be sidestepped through a
+# secondary ABI (i386/x32 on x86-64), where its syscall numbers do not apply.
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -20,6 +20,8 @@ is the tag to cut after it has survived a week on real hardware.
   token it was issued under, in a persisted `sessions` table (schema v5), so
   a restart keeps browsers logged in and rotating `server.api_token` logs
   every browser out. A guessed cookie, or the token used as a cookie, is 401.
+  The token fingerprint is derived with scrypt (a password-grade KDF, computed
+  once at startup), never a plain hash of the credential.
 - `certificates` pins TLS 1.2 as the floor for its inspection connection (the
   deliberately unverified handshake is documented in place: it reads the
   certificate, it trusts nothing and sends nothing).

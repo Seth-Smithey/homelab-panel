@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app.config import Config
 from app.validate import validate
 
-from .conftest import write_config
+from .conftest import tmp_file, write_config
 
 # ---------- validate() must never raise ----------
 
@@ -142,10 +142,8 @@ def client(monkeypatch):
         "server: {host: 127.0.0.1, port: 8099, api_token: 'good-token'}\n"
         "poll: {default_interval: 5}\nhost_metrics: {enabled: true, interval: 3600}\n"
     )  # one real collector here on purpose: /healthz ready needs a completed poll
-    import tempfile
-
     monkeypatch.setenv("PANEL_CONFIG", str(cfg_path))
-    monkeypatch.setenv("PANEL_DB", tempfile.mktemp(suffix=".db"))
+    monkeypatch.setenv("PANEL_DB", tmp_file(".db"))
     import importlib
 
     import app.main as main_module
@@ -180,12 +178,21 @@ def test_session_exchange_via_header_sets_httponly_cookie(client):
     res = client.post("/api/session", headers={"Authorization": "Bearer good-token"})
     assert res.status_code == 200 and res.json()["session"] is True
     cookie = res.headers["set-cookie"]
-    assert "HttpOnly" in cookie and "panel_session=good-token" in cookie
+    assert "HttpOnly" in cookie
+    # The cookie is a random session id — never the token itself.
+    assert "good-token" not in cookie
+    session_id = res.cookies["panel_session"]
+    assert len(session_id) >= 32
     # And the cookie alone now authenticates.
     fresh = TestClient(client.app)
-    fresh.cookies.set("panel_session", "good-token")
+    fresh.cookies.set("panel_session", session_id)
     with fresh:
         assert fresh.get("/api/status").status_code == 200
+    # A guessed cookie does not, and the token itself is not a valid cookie.
+    other = TestClient(client.app)
+    other.cookies.set("panel_session", "good-token")
+    with other:
+        assert other.get("/api/status").status_code == 401
 
 
 def test_inf_mute_rejected_and_api_survives(client):
@@ -238,3 +245,19 @@ def test_forwarded_host_satisfies_origin_check(client):
         headers={"Origin": "https://panel.example.com", "X-Forwarded-Host": "panel.example.com"},
     )
     assert res.status_code == 200
+
+
+def test_rotating_the_token_invalidates_sessions(client, monkeypatch):
+    """A session records which api_token issued it; after rotation the old
+    cookie is refused (and cleared) instead of living on for 30 days."""
+    import app.main as main_module
+    res = client.post("/api/session", headers={"Authorization": "Bearer good-token"})
+    session_id = res.cookies["panel_session"]
+    monkeypatch.setattr(main_module, "_expected_token", lambda: "rotated-token")
+    fresh = TestClient(client.app)
+    fresh.cookies.set("panel_session", session_id)
+    with fresh:
+        res = fresh.get("/api/status")
+        assert res.status_code == 401
+        assert "Max-Age=0" in res.headers.get("set-cookie", "")
+        assert fresh.get("/api/status", headers={"Authorization": "Bearer rotated-token"}).status_code == 200

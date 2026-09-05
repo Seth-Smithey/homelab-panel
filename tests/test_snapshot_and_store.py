@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-import tempfile
 import time
 
 import pytest
@@ -16,7 +15,7 @@ from app.models import OK, UNKNOWN, WARNING, Check, Panel
 from app.scheduler import Engine
 from app.version import SCHEMA_VERSION
 
-from .conftest import check, make_panel, write_config
+from .conftest import check, make_panel, tmp_file, write_config
 
 WITH_HOST = (
     "config_version: 1\nsite: {name: t}\nserver: {host: 127.0.0.1, port: 8080, api_token: ''}\n"
@@ -89,7 +88,7 @@ def test_snapshot_reports_alert_health(config, store):
 
 
 def test_mute_rejects_non_finite_and_clamps():
-    st = Store(tempfile.mktemp(suffix=".db"))
+    st = Store(tmp_file(".db"))
     for bad in (math.inf, math.nan, -1, 0):
         with pytest.raises(ValueError):
             st.set_mute("x", "r", bad)
@@ -178,7 +177,7 @@ def test_schema_version_matches_migration_count():
 
 
 def test_migration_preserves_data_and_is_idempotent():
-    path = tempfile.mktemp(suffix=".db")
+    path = tmp_file(".db")
     _legacy_db(path)
     st = Store(path)
     assert st.schema_from == 0 and st.schema_to == SCHEMA_VERSION
@@ -191,7 +190,7 @@ def test_migration_preserves_data_and_is_idempotent():
 
 
 def test_newer_schema_is_refused():
-    path = tempfile.mktemp(suffix=".db")
+    path = tmp_file(".db")
     c = sqlite3.connect(path)
     c.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 5}")
     c.commit()
@@ -204,7 +203,7 @@ def test_interrupted_migration_rolls_back(monkeypatch):
     """A crash mid-migration must leave neither a half-schema nor a bumped version."""
     import app.migrations as m
 
-    path = tempfile.mktemp(suffix=".db")
+    path = tmp_file(".db")
     c = sqlite3.connect(path)
     migrate(c)
     before = current_version(c)

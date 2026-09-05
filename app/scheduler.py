@@ -222,6 +222,8 @@ class Engine:
                 expired = self.store.expire_mutes()
                 if expired:
                     log.info("expired %d mute(s)", expired)
+                with contextlib.suppress(Exception):
+                    self.store.expire_sessions()
                 removed = self.store.prune(
                     int(self.cfg.get("poll.history_retention_days", 14) or 14)
                 )

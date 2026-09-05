@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -45,6 +46,17 @@ WEB_DIR = ROOT / "web"
 # in Cloudflare's, and in browser history — one credential written to four
 # places on every poll.
 SESSION_COOKIE = "panel_session"
+SESSION_TTL = 60 * 60 * 24 * 30
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def _token_fingerprint(expected: str) -> str:
+    """Identifies which api_token a session was issued under, without being
+    usable as the token: a truncated hash."""
+    return _sha256("panel-token:" + expected)[:32]
 
 state: dict[str, object] = {}
 
@@ -117,7 +129,10 @@ def _expected_token() -> str:
 
 
 def _presented_token(request: Request) -> tuple[str, str]:
-    """(token, source). Explicit credentials outrank the stored session.
+    """(credential, source). Explicit credentials outrank the stored session.
+
+    For "header" and "query" the credential is the API token; for "cookie" it
+    is a random session id issued by /api/session, never the token itself.
 
     Order matters for token rotation: after `server.api_token` changes, the
     browser still holds a cookie carrying the *old* token. If the cookie were
@@ -146,10 +161,16 @@ async def require_token(request: Request) -> None:
     if not expected:
         return
     token, source = _presented_token(request)
+    if source == "cookie":
+        # The cookie is a session id; only its hash is stored, and the session
+        # must have been issued under the *current* token (rotation logs
+        # everyone out). Nothing here compares against the token itself.
+        if store().session_valid(_sha256(token), _token_fingerprint(expected)):
+            return
     # Constant-time: a plain != leaks the length of the matching prefix.
     # Compared as bytes: compare_digest raises TypeError on non-ASCII str, which
     # turned a malformed token into a 500 from inside the auth guard.
-    if hmac.compare_digest(token.encode("utf-8", "replace"), expected.encode("utf-8")):
+    elif hmac.compare_digest(token.encode("utf-8", "replace"), expected.encode("utf-8")):
         return
     response_headers = {}
     if source == "cookie" or request.cookies.get(SESSION_COOKIE):
@@ -263,6 +284,11 @@ async def open_session(request: Request) -> JSONResponse:
     drops the token from every subsequent URL and from its own storage.
     HttpOnly means a future XSS cannot read the cookie back out.
 
+    The cookie is a random session id, not the token: the browser never holds
+    the credential, the database holds only the id's hash, and the session
+    records which token it was issued under so rotating `server.api_token`
+    invalidates it. Sessions are persisted, so a restart keeps you logged in.
+
     The cookie is set on the response object that is actually returned — an
     injected `Response` parameter is ignored when the handler returns its own
     response, so setting it there does nothing at all.
@@ -270,17 +296,19 @@ async def open_session(request: Request) -> JSONResponse:
     expected = _expected_token()
     if not expected:
         return JSONResponse({"session": False, "reason": "no api_token configured"})
+    session_id = secrets.token_urlsafe(32)
+    store().create_session(_sha256(session_id), _token_fingerprint(expected), SESSION_TTL)
     payload = JSONResponse({"session": True})
     payload.set_cookie(
         SESSION_COOKIE,
-        expected,
+        session_id,
         httponly=True,
         samesite="strict",
         # A Secure cookie is dropped outright over plain HTTP, which is how
         # most people reach this on a LAN — so only set it when the request
         # actually arrived over TLS.
         secure=request.url.scheme == "https",
-        max_age=60 * 60 * 24 * 30,
+        max_age=SESSION_TTL,
         path="/",
     )
     return payload

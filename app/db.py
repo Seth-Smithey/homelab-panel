@@ -341,6 +341,45 @@ class Store:
             ).fetchall()
         return {r["check_id"]: dict(r) for r in rows}
 
+    # -- sessions ------------------------------------------------------
+
+    def create_session(self, id_hash: str, token_fp: str, ttl_seconds: float) -> None:
+        now = time.time()
+        with self._lock:
+            self._guard()
+            self._conn.execute(
+                "INSERT OR REPLACE INTO sessions (id_hash, token_fp, created, expires)"
+                " VALUES (?, ?, ?, ?)",
+                (id_hash, token_fp, now, now + max(60.0, float(ttl_seconds))),
+            )
+            self._conn.commit()
+
+    def session_valid(self, id_hash: str, token_fp: str) -> bool:
+        """Is this session id known, unexpired, and issued under the current token?"""
+        with self._lock:
+            self._guard()
+            row = self._conn.execute(
+                "SELECT token_fp, expires FROM sessions WHERE id_hash = ?", (id_hash,)
+            ).fetchone()
+        if row is None:
+            return False
+        return float(row["expires"]) > time.time() and str(row["token_fp"]) == token_fp
+
+    def expire_sessions(self, current_token_fp: str | None = None) -> int:
+        """Drop expired sessions, and — when the token has changed — every
+        session issued under a previous one."""
+        with self._lock:
+            self._guard()
+            cur = self._conn.execute("DELETE FROM sessions WHERE expires < ?", (time.time(),))
+            n = cur.rowcount
+            if current_token_fp is not None:
+                cur = self._conn.execute(
+                    "DELETE FROM sessions WHERE token_fp != ?", (current_token_fp,)
+                )
+                n += cur.rowcount
+            self._conn.commit()
+            return n
+
     def expire_mutes(self) -> int:
         with self._lock:
             self._guard()

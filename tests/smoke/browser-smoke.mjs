@@ -13,9 +13,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-const ROOT = new URL("../..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PORT = Number(process.env.SMOKE_PORT || 8099);
 const BASE = `http://127.0.0.1:${PORT}`;
 const PYTHON = process.env.PYTHON || "python3";
@@ -33,7 +34,15 @@ const starter = readFileSync(join(ROOT, "config.starter.yaml"), "utf8")
 const cfg = join(work, "config.yaml");
 writeFileSync(cfg, starter.replace(/(host_metrics:\s*\n\s+enabled:\s*true\s*\n\s+interval:\s*)\d+/, "$1120"));
 if (!/interval: 120\n/.test(readFileSync(cfg, "utf8"))) fail("could not set a 120s host_metrics interval in the smoke config");
-const poll = () => page.evaluate(() => fetch("/api/refresh/host_metrics", { method: "POST" }).then((r) => r.ok));
+// Windows has no os.getloadavg, so exercise the real HTTP collector against
+// this server's health endpoint there. Linux CI still covers host_metrics.
+const collector = process.platform === "win32" ? "services" : "host_metrics";
+if (collector === "services") {
+  writeFileSync(cfg, readFileSync(cfg, "utf8")
+    .replace(/(host_metrics:\s*\n\s+enabled:\s*)true/, "$1false") +
+    `\nservices:\n  enabled: true\n  interval: 120\n  checks:\n    - name: panel-health\n      url: "${BASE}/healthz"\n`);
+}
+const poll = () => page.evaluate((key) => fetch(`/api/refresh/${key}`, { method: "POST" }).then((r) => r.ok), collector);
 
 const server = spawn(PYTHON, ["-m", "app.main"], {
   cwd: ROOT,
@@ -55,7 +64,7 @@ for (let i = 0; i < 60 && !ready; i++) {
 }
 if (!ready) fail("server did not become ready");
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {});
 const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
 const errors = [];
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
@@ -110,11 +119,15 @@ const bannerText = await page.evaluate(() => (document.getElementById("banner")?
 if (/No update from the panel/.test(bannerText)) fail(`watchdog fired on a healthy stream: ${bannerText}`);
 
 // Dark and light both render the verdict.
+const backgrounds = [];
 for (const scheme of ["dark", "light"]) {
   await page.emulateMedia({ colorScheme: scheme });
+  await page.waitForFunction((mode) => document.documentElement.dataset.theme === mode, scheme);
   const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
   if (!bg) fail(`no background in ${scheme}`);
+  backgrounds.push(bg);
 }
+if (backgrounds[0] === backgrounds[1]) fail("dark and light backgrounds are identical");
 
 if (errors.length) fail(`console errors: ${errors.join(" | ")}`);
 await browser.close();

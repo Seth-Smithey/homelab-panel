@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#0E161F">
+<meta name="theme-color" content="#111316">
 <title>homelab panel</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -18,15 +18,22 @@
 
 <header class="bar">
   <div class="bar-id">
+    <span class="brand-mark" aria-hidden="true">▦</span>
     <span class="bar-name" id="site-name">homelab</span>
     <span class="bar-sub" id="site-sub"></span>
   </div>
   <div class="bar-tools">
     <input id="filter" type="search" placeholder="Filter checks" autocomplete="off" spellcheck="false" aria-label="Filter checks">
     <button id="problems" class="toggle" type="button" aria-pressed="false" title="Show only what needs attention (p)">Problems only</button>
-    <button id="order" class="toggle" type="button" aria-pressed="false" title="Keep panels in a fixed order instead of worst-first (o)">Fixed order</button>
-    <button id="notify" class="toggle" type="button" aria-pressed="false" title="Notify me when something breaks">Notify</button>
-    <button id="theme" class="toggle" type="button" title="Switch between dark and light (t)">Light</button>
+    <details class="display-menu">
+      <summary class="toggle">Display</summary>
+      <div class="display-options">
+        <button id="order" class="toggle" type="button" aria-pressed="true" title="Keep panels in a fixed order instead of worst-first (o)">Fixed order</button>
+        <button id="coverage" class="toggle" type="button" aria-pressed="false">Check map</button>
+        <button id="notify" class="toggle" type="button" aria-pressed="false" title="Notify me when something breaks">Notify</button>
+        <button id="theme" class="toggle" type="button" title="Switch between dark and light (t)">Light</button>
+      </div>
+    </details>
     <span class="feed" id="feed" data-state="connecting" role="status">connecting</span>
   </div>
 </header>
@@ -37,8 +44,10 @@
 
 <main>
   <section class="verdict" id="verdict" data-severity="unknown">
-    <p class="verdict-line" id="headline">Connecting to the panel…</p>
+    <p class="eyebrow">Overview</p>
+    <h1 class="verdict-line" id="headline">Connecting to the panel…</h1>
     <p class="verdict-meta" id="tally">Waiting for the first poll.</p>
+    <div id="coverage-map" hidden>
     <div class="strip" id="strip" aria-label="Every monitored check, one cell each"></div>
     <p class="legend" id="legend" aria-hidden="true">
       <span data-severity="ok">ok</span>
@@ -48,9 +57,18 @@
       <span data-severity="stale">stale</span>
       <span data-severity="muted">muted</span>
     </p>
+    </div>
   </section>
 
-  <section class="board" id="board"></section>
+  <section class="attention" aria-labelledby="attention-title">
+    <div class="section-heading"><h2 id="attention-title">Needs attention <span id="attention-count" class="section-count"></span></h2><span class="section-note">Critical first</span></div>
+    <div id="attention-list"><p class="attention-empty">Waiting for the first reading.</p></div>
+  </section>
+
+  <section aria-labelledby="infrastructure-title">
+    <div class="section-heading"><h2 id="infrastructure-title">Infrastructure</h2><span id="board-note" class="section-note">Summaries · Fixed positions</span></div>
+    <div class="board" id="board"></div>
+  </section>
 
   <section class="log">
     <h2 class="log-title">Recent changes</h2>

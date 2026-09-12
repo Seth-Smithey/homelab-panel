@@ -31,6 +31,11 @@
     banner: document.getElementById("banner"),
     toast: document.getElementById("toast"),
     live: document.getElementById("live"),
+    attention: document.getElementById("attention-list"),
+    attentionCount: document.getElementById("attention-count"),
+    boardNote: document.getElementById("board-note"),
+    coverage: document.getElementById("coverage"),
+    coverageMap: document.getElementById("coverage-map"),
   };
 
   const reducedMotion = Boolean(
@@ -42,8 +47,9 @@
   const view = {
     filter: "",
     problemsOnly: false,
-    fixedOrder: false,
+    fixedOrder: true,
     open: new Set(),
+    expandedPanels: new Set(),
     notify: false,
   };
   let snapshot = null;
@@ -368,6 +374,7 @@
     const total = (c.ok || 0) + (c.warning || 0) + (c.critical || 0) + (c.unknown || 0);
     const parts = [
       `${total} checks`,
+      `${c.ok || 0} healthy`,
       `${c.critical || 0} critical`,
       `${c.warning || 0} warning`,
       `${c.unknown || 0} unknown`,
@@ -377,6 +384,7 @@
     el.tally.textContent = parts.join(" · ");
 
     renderStrip(data);
+    renderAttention(data);
     notifyTransitions(data);
     renderBoard(data);
     renderEvents(data.events || []);
@@ -417,12 +425,68 @@
       '<span class="spark-note">No checks are reporting yet.</span>';
   }
 
+  function renderAttention(data) {
+    const focused = el.attention.contains(document.activeElement)
+      ? document.activeElement?.dataset.attentionKey : null;
+    const entries = [];
+    for (const panel of data.panels) {
+      if (panelProblem(panel)) {
+        const label = panel.stale ? "Stale" : panel.pending ? "Pending" : "Unknown";
+        entries.push({ key: `panel:${panel.key}`, panel: panel.key, severity: "unknown", label,
+          name: panel.title, value: panel.stale ? "Readings are out of date" : panel.pending ? "Waiting for first poll" : "Monitoring unavailable",
+          detail: panel.error || (panel.stale ? `Last reading ${clockAge(panel.age)}` : panel.pending ? "No reading received yet" : "The collector reported no checks") });
+      }
+      for (const ch of panel.checks) {
+        if (ch.muted || (ch.severity === "ok" && !ch.stale)) continue;
+        // One collector-level freshness warning is enough; do not repeat every old row.
+        if (panel.stale && ch.stale) continue;
+        const severity = ch.stale ? "unknown" : ch.severity;
+        entries.push({ key: `check:${ch.id}`, panel: panel.key, check: ch.id, severity,
+          label: ch.stale ? "Stale" : severity === "critical" ? "Critical" : severity === "warning" ? "Warning" : "Unknown",
+          name: ch.name, value: ch.value, detail: `${panel.title}${ch.detail ? ` · ${ch.detail}` : ""}` });
+      }
+    }
+    entries.sort((a, b) => (RANK[b.severity] || 0) - (RANK[a.severity] || 0));
+    el.attentionCount.textContent = String(entries.length);
+    el.attention.innerHTML = entries.length ? entries.map((item) =>
+      `<button type="button" class="attention-item" data-attention-key="${esc(item.key)}" data-panel-target="${esc(item.panel)}"${item.check ? ` data-check-target="${esc(item.check)}"` : ""}>
+        <span class="status-badge" data-severity="${esc(item.severity)}">${esc(item.label)}</span>
+        <span class="attention-main"><span class="attention-name">${esc(item.name)}${item.value ? ` — ${esc(item.value)}` : ""}</span><span class="attention-detail">${esc(item.detail)}</span></span>
+        <span class="disclosure-arrow" aria-hidden="true">›</span>
+      </button>`).join("") : `<p class="attention-empty">${data.muted ? `No unmuted problems. ${data.muted} muted check${data.muted === 1 ? "" : "s"} still reporting.` : data.panels.length ? "No active problems. Your monitored checks are healthy." : "No collectors configured."}</p>`;
+    if (focused) el.attention.querySelector(`[data-attention-key="${cssEscape(focused)}"]`)?.focus({ preventScroll: true });
+  }
+
+  function revealCheck(id, panelKey) {
+    if (!snapshot) return;
+    const panel = snapshot.panels.find((p) => p.key === panelKey || p.checks.some((ch) => ch.id === id));
+    if (!panel) return;
+    // Explicit navigation reveals its target even when a filter hid it.
+    view.filter = "";
+    el.filter.value = "";
+    clearTimeout(filterTimer);
+    view.problemsOnly = false;
+    el.problems.setAttribute("aria-pressed", "false");
+    view.expandedPanels.add(panel.key);
+    if (id) view.open.add(id);
+    renderBoard(snapshot);
+    const target = id ? el.board.querySelector(`[data-id="${cssEscape(id)}"] .row-toggle`)
+      : el.board.querySelector(`[data-key="${cssEscape(panel.key)}"] [data-refresh]`);
+    target?.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+    target?.focus({ preventScroll: true });
+  }
+
+  el.attention.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-panel-target]");
+    if (item) revealCheck(item.dataset.checkTarget, item.dataset.panelTarget);
+  });
+
   // Remember what the user was focused on, by identity rather than by
   // node, so a full re-render does not drop keyboard focus on the floor.
   function captureFocus() {
     const active = document.activeElement;
     if (!active || !el.board.contains(active)) return null;
-    for (const attr of ["data-mute", "data-refresh", "data-id"]) {
+    for (const attr of ["data-mute", "data-refresh", "data-expand", "data-id"]) {
       const holder = active.closest(`[${attr}]`);
       if (holder) return { attr, value: holder.getAttribute(attr), isRow: attr === "data-id" };
     }
@@ -437,6 +501,7 @@
 
   function renderBoard(data) {
     const saved = captureFocus();
+    el.boardNote.textContent = view.filter || view.problemsOnly ? "Filtered checks" : `Summaries · ${view.fixedOrder ? "Fixed positions" : "Worst first"}`;
     const order = data.panel_order || [];
     const panels = [...data.panels].sort((a, b) => {
       // Fixed order keeps every panel where the user expects it; the
@@ -458,8 +523,17 @@
       if (filtering && !visible.length && !keepForProblem && !keepForText) return "";
       if (view.problemsOnly && view.filter && !visible.length && !(problem && panelMatchesFilter(panel))) return "";
 
+      const expanded = view.expandedPanels.has(panel.key) || filtering;
+      // Surface problems before routine rows in each summary, without inventing metrics.
+      const ranked = [...visible].sort((a, b) => {
+        const priority = (ch) => !ch.muted && (ch.stale || ch.severity !== "ok") ? 2 : ch.metric != null || ch.percent != null ? 1 : 0;
+        return priority(b) - priority(a);
+      });
+      const previewIds = new Set(ranked.slice(0, 3).map((ch) => ch.id));
+      if (saved?.isRow) previewIds.add(saved.value);
+      const displayed = expanded ? visible : visible.filter((ch) => previewIds.has(ch.id) || view.open.has(ch.id));
       const groups = new Map();
-      for (const ch of visible) {
+      for (const ch of displayed) {
         if (!groups.has(ch.group)) groups.set(ch.group, []);
         groups.get(ch.group).push(ch);
       }
@@ -476,7 +550,7 @@
       }
 
       for (const [group, checks] of groups) {
-        if (groups.size > 1) body += `<p class="group-label">${esc(group)}</p>`;
+        if (expanded && groups.size > 1) body += `<p class="group-label">${esc(group)}</p>`;
         body += checks.map((ch) => rowHtml(ch)).join("");
       }
 
@@ -486,12 +560,14 @@
 
       return `<article class="panel" data-severity="${esc(panel.severity)}" data-key="${esc(panel.key)}"${panel.stale ? ' data-stale="true"' : ""}>
         <header class="panel-head">
-          <span class="panel-title">${esc(panel.title)}</span>
-          <span class="panel-summary">${esc(panel.summary || "")}</span>
+          <h3 class="panel-title">${esc(panel.title)}</h3>
+          <span class="status-badge" data-severity="${esc(panel.stale || panel.pending ? "unknown" : panel.severity)}">${panel.stale ? "Stale" : panel.pending ? "Pending" : panel.severity === "ok" ? "Healthy" : panel.severity === "critical" ? "Critical" : panel.severity === "warning" ? "Warning" : "Unknown"}</span>
           <button class="icon" type="button" data-refresh="${esc(panel.key)}"
             title="Poll ${esc(panel.title)} now" aria-label="Poll ${esc(panel.title)} now">↻</button>
         </header>
+        <div class="panel-overview"><p class="panel-summary">${esc(panel.summary || (panel.pending ? "Waiting for data" : `${panel.checks.length} monitored check${panel.checks.length === 1 ? "" : "s"}`))}</p><p class="panel-caption">${panel.checks.length} check${panel.checks.length === 1 ? "" : "s"}${panel.checks.some((ch) => ch.muted) ? ` · ${panel.checks.filter((ch) => ch.muted).length} muted` : ""}${panel.age != null ? ` · ${esc(clockAge(panel.age))}` : ""}</p></div>
         ${body}
+        ${visible.length > 3 && !filtering ? `<button class="panel-expand" type="button" data-expand="${esc(panel.key)}" aria-expanded="${expanded}">${expanded ? "Show summary" : `View all ${visible.length} checks`} <span aria-hidden="true">${expanded ? "↑" : "→"}</span></button>` : ""}
       </article>`;
     }).join("");
 
@@ -804,6 +880,16 @@
   const refreshInflight = new Set();
 
   el.board.addEventListener("click", async (ev) => {
+    const expand = ev.target.closest("[data-expand]");
+    if (expand) {
+      const key = expand.dataset.expand;
+      if (view.expandedPanels.has(key)) {
+        view.expandedPanels.delete(key);
+        for (const ch of snapshot.panels.find((p) => p.key === key)?.checks || []) view.open.delete(ch.id);
+      } else view.expandedPanels.add(key);
+      renderBoard(snapshot);
+      return;
+    }
     const refresh = ev.target.closest("[data-refresh]");
     if (refresh) {
       ev.stopPropagation();
@@ -862,14 +948,7 @@
   el.strip.addEventListener("click", (ev) => {
     const cell = ev.target.closest(".cell");
     if (!cell) return;
-    const target = el.board.querySelector(`[data-id="${cssEscape(cell.dataset.target)}"] .row-toggle`);
-    if (target) {
-      target.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
-      if (!reducedMotion) target.classList.add("changed");
-      target.focus({ preventScroll: true });
-    } else {
-      showToast("That check is hidden by the current filter.", "info", 2500);
-    }
+    revealCheck(cell.dataset.target);
   });
 
   let filterTimer;
@@ -900,11 +979,17 @@
     try { localStorage.setItem("panel-theme", next); } catch { /* private mode */ }
   });
 
+  el.coverage.addEventListener("click", () => {
+    el.coverageMap.hidden = !el.coverageMap.hidden;
+    el.coverage.setAttribute("aria-pressed", String(!el.coverageMap.hidden));
+    try { localStorage.setItem("panel-coverage", el.coverageMap.hidden ? "0" : "1"); } catch { /* private mode */ }
+  });
+
   function applyTheme(mode) {
     document.documentElement.dataset.theme = mode;
     el.theme.textContent = mode === "dark" ? "Light" : "Dark";
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", mode === "dark" ? "#0E161F" : "#EEF2F5");
+    if (meta) meta.setAttribute("content", mode === "dark" ? "#111316" : "#F5F6F8");
   }
 
   document.addEventListener("keydown", (ev) => {
@@ -961,10 +1046,10 @@
       view.notify = true;
       el.notify.setAttribute("aria-pressed", "true");
     }
-    if (localStorage.getItem("panel-order") === "fixed") {
-      view.fixedOrder = true;
-      el.order.setAttribute("aria-pressed", "true");
-    }
+    view.fixedOrder = localStorage.getItem("panel-order") !== "severity";
+    el.order.setAttribute("aria-pressed", String(view.fixedOrder));
+    el.coverageMap.hidden = localStorage.getItem("panel-coverage") !== "1";
+    el.coverage.setAttribute("aria-pressed", String(!el.coverageMap.hidden));
   } catch { /* private mode */ }
 
   if ("serviceWorker" in navigator && location.protocol === "https:") {

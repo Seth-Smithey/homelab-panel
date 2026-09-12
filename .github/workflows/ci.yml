@@ -154,6 +154,7 @@ jobs:
           pip install -r requirements.lock
           npm install --no-save playwright@1.56.0
           npx playwright install --with-deps chromium
+          node tests/smoke/dashboard-ui.mjs
           node tests/smoke/browser-smoke.mjs
 
   install-smoke:

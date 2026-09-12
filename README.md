@@ -278,14 +278,23 @@ you a standalone app. It's built for a narrow viewport.
 
 ## Using it
 
-- **Worst first.** Panels sort by severity, so problems rise to the top.
-  Press `o` (or "Fixed order") to keep them in place during an incident.
+- **Needs attention.** Problems appear above the infrastructure, critical
+  first, including stale, pending and unreachable collectors. Muted checks
+  stay in their panels without filling the attention list. Click an issue
+  to reveal its diagnostics, even if a filter or summary hid that check.
+- **Summaries first.** Infrastructure panels show up to three checks,
+  prioritising problems and numeric readings. "View all checks" opens the
+  full inventory; "Show summary" collapses it again. Open panels and row
+  details stay open across live updates.
+- **Stable positions.** Panels default to fixed order. Press `o` or use
+  Display → Fixed order to switch to worst-first; your choice is remembered.
 - **Stale is not green.** A panel whose reading is older than three poll
   intervals shows its old values, labelled, but counts as *unknown* — a
   reading from ten minutes ago says nothing about now. If the board itself
   loses its connection, a banner says so and the verdict dims.
-- **The strip.** One cell per check, the whole lab in one glance. Click a cell
-  to jump to its row.
+- **Check map.** Enable Display → Check map for one cell per check. Click a
+  cell to reveal its row and history. Display also holds theme and browser
+  notification preferences.
 - **Click any row** for a sparkline and 24-hour availability.
 - **Mute** a check you already know about — a box that's deliberately off, a
   probe that fails for a reason. Muted checks keep reporting and stay visible,

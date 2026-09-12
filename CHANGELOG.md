@@ -6,6 +6,29 @@ All notable changes are recorded here. The format follows
 collectors and options and is always safe to take blind, MAJOR means an
 update needs a manual step.
 
+## [Unreleased]
+
+### Changed
+
+- Redesigned the board with a neutral palette, clearer typography, compact
+  infrastructure summaries, and a dedicated severity-sorted attention list.
+- Infrastructure defaults to fixed positions. Existing order preferences
+  remain respected; all checks, diagnostics, history and mute controls remain
+  available through disclosure controls. Attention and check-map navigation
+  reveal checks hidden by summaries or filters.
+- Grouped theme, order, notification and optional check-map controls under
+  Display. Preserved explicit stale, unknown, pending and muted states.
+
+### Tests
+
+- Added populated dashboard browser coverage for attention ordering, mutes,
+  missing readings, expansion, focus, history, escaping, and responsive layout
+  in both themes from 320 to 1440 pixels.
+- Made the live-server smoke test usable on Windows with a local HTTP probe;
+  Linux CI continues to exercise host metrics. Theme assertions now verify an
+  actual dark/light change. Set `BROWSER_CHANNEL=msedge` to use installed Edge
+  for local browser tests; CI uses its pinned Playwright Chromium.
+
 ## [1.0.0-rc.1] — 2026-09-05
 
 First tagged release, as a release candidate: the code has had three review
